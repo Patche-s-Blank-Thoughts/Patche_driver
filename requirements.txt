@@ -1,0 +1,24 @@
+# ── Core vision & CV ────────────────────────────────────────────────────────
+opencv-python>=4.8
+numpy>=1.24
+mss>=9.0
+
+# ── YOLO obstacle detection ──────────────────────────────────────────────────
+ultralytics>=8.0
+
+# ── Virtual joystick (Windows-only; skip on Linux/CI) ───────────────────────
+pyvjoy; sys_platform == "win32"
+
+# ── Keyboard gear shifting ───────────────────────────────────────────────────
+keyboard
+
+# ── Web dashboard ────────────────────────────────────────────────────────────
+flask>=3.0
+flask-socketio>=5.3.6
+# Threading mode (no monkey-patching); swap for eventlet if you prefer async
+# eventlet>=0.33
+
+# ── OCR for speed-limit sign reading (optional but recommended) ──────────────
+pytesseract>=0.3.10
+# Pillow is required by pytesseract
+Pillow>=10.0

@@ -76,6 +76,17 @@ def main() -> None:
         action="store_true",
         help="Enable LLM high-level planner (overrides ETS2_LLM_ENABLED env var)",
     )
+    parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        help="Disable the web dashboard (overrides ETS2_DASH_ENABLED env var)",
+    )
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=None,
+        help="Dashboard HTTP port (overrides ETS2_DASH_PORT env var, default 5000)",
+    )
     args = parser.parse_args()
 
     cfg = ETS2Config()
@@ -86,9 +97,14 @@ def main() -> None:
         cfg.loop.fps = args.fps
     if args.llm:
         cfg.llm.enabled = True
+    if args.no_dashboard:
+        cfg.dashboard.enabled = False
+    if args.dashboard_port is not None:
+        cfg.dashboard.port = args.dashboard_port
 
-    logger.info("Starting ETS2 AI Driver  (FPS=%d, debug=%s, LLM=%s)",
-                cfg.loop.fps, cfg.loop.show_debug, cfg.llm.enabled)
+    logger.info("Starting ETS2 AI Driver  (FPS=%d, debug=%s, LLM=%s, dashboard=%s port=%d)",
+                cfg.loop.fps, cfg.loop.show_debug, cfg.llm.enabled,
+                cfg.dashboard.enabled, cfg.dashboard.port)
 
     driver = ETS2Driver(cfg)
 

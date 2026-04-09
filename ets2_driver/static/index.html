@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ETS2 AI Driver — Dashboard</title>
+  <!-- Socket.IO client (loaded from CDN; works offline via fallback polling) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"
+          crossorigin="anonymous"></script>
+  <style>
+    /* ── Reset & base ──────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d0f14;
+      --surface:   #161b27;
+      --card:      #1e2535;
+      --border:    #2a3348;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --accent:    #38bdf8;
+      --green:     #4ade80;
+      --yellow:    #facc15;
+      --red:       #f87171;
+      --orange:    #fb923c;
+      --radius:    12px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+    }
+
+    /* ── Layout ────────────────────────────────────────────────────── */
+    .dashboard {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      grid-template-rows: auto 1fr auto;
+      grid-template-areas:
+        "header  header"
+        "main    sidebar"
+        "footer  footer";
+      min-height: 100vh;
+      gap: 0;
+    }
+
+    /* ── Header ────────────────────────────────────────────────────── */
+    .header {
+      grid-area: header;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 20px;
+    }
+    .header-title {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: .5px;
+      color: var(--accent);
+    }
+    .header-status {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--red);
+      transition: background .3s;
+    }
+    .status-dot.connected { background: var(--green); }
+
+    .metric-pill {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2px 10px;
+      font-size: 12px;
+    }
+
+    /* ── Main area (vision + controls) ────────────────────────────── */
+    .main {
+      grid-area: main;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+      overflow-y: auto;
+    }
+
+    /* ── Cards ─────────────────────────────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+    }
+    .card-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    /* ── Vision feed ───────────────────────────────────────────────── */
+    .vision-wrap {
+      position: relative;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      aspect-ratio: 16/9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .vision-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .vision-overlay {
+      position: absolute;
+      top: 8px; left: 8px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      background: rgba(0,0,0,.65);
+      border: 1px solid rgba(255,255,255,.15);
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-size: 11px;
+      backdrop-filter: blur(4px);
+    }
+    .badge.danger { border-color: var(--red); color: var(--red); }
+    .badge.warn   { border-color: var(--yellow); color: var(--yellow); }
+    .badge.ok     { border-color: var(--green); color: var(--green); }
+    .vision-placeholder {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    /* ── Control gauges row ─────────────────────────────────────────── */
+    .gauges-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+    }
+
+    .gauge-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .gauge-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+    }
+    .gauge-value {
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    /* Arc gauge (SVG) */
+    .arc-gauge svg { overflow: visible; }
+    .arc-track { fill: none; stroke: var(--border); stroke-width: 8; }
+    .arc-fill  { fill: none; stroke-width: 8; stroke-linecap: round;
+                 transition: stroke-dashoffset .15s ease, stroke .15s; }
+
+    /* Steering: bidirectional bar */
+    .steer-bar-wrap {
+      width: 100%;
+      height: 14px;
+      background: var(--bg);
+      border-radius: 8px;
+      position: relative;
+      overflow: hidden;
+    }
+    .steer-bar-center {
+      position: absolute;
+      left: 50%; top: 0;
+      width: 2px; height: 100%;
+      background: var(--border);
+      transform: translateX(-50%);
+    }
+    .steer-bar-fill {
+      position: absolute;
+      top: 0; height: 100%;
+      border-radius: 4px;
+      transition: left .1s, width .1s, background .1s;
+    }
+
+    /* ── Sidebar ───────────────────────────────────────────────────── */
+    .sidebar {
+      grid-area: sidebar;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      overflow-y: auto;
+    }
+    .sidebar-section {
+      border-bottom: 1px solid var(--border);
+      padding: 14px;
+    }
+    .section-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    /* ── Speed limit sign ──────────────────────────────────────────── */
+    .speed-sign-wrap {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .speed-sign {
+      width: 72px; height: 72px;
+      border-radius: 50%;
+      border: 8px solid var(--red);
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: opacity .3s;
+    }
+    .speed-sign.no-sign { border-color: var(--border); background: var(--card); }
+    .speed-sign-value {
+      font-size: 22px;
+      font-weight: 800;
+      color: #111;
+      line-height: 1;
+    }
+    .speed-sign.no-sign .speed-sign-value { color: var(--muted); font-size: 14px; }
+    .speed-sign-meta { font-size: 12px; color: var(--muted); line-height: 1.5; }
+    .conf-bar-wrap {
+      width: 100%;
+      height: 6px;
+      background: var(--bg);
+      border-radius: 3px;
+      margin-top: 6px;
+      overflow: hidden;
+    }
+    .conf-bar {
+      height: 100%;
+      border-radius: 3px;
+      background: var(--accent);
+      transition: width .3s;
+    }
+
+    /* ── GPS mini-map ──────────────────────────────────────────────── */
+    .gps-wrap {
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      width: 100%;
+      aspect-ratio: 1.5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .gps-wrap img { width: 100%; height: 100%; object-fit: contain; }
+    .gps-placeholder { color: var(--muted); font-size: 12px; }
+
+    /* ── Decision log ──────────────────────────────────────────────── */
+    .decision-log {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .log-entry {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      font-size: 12px;
+      padding: 4px 6px;
+      border-radius: 5px;
+      background: var(--bg);
+      border-left: 3px solid var(--border);
+      animation: fadeIn .2s ease;
+    }
+    .log-entry.action { border-color: var(--accent); }
+    .log-entry.warn   { border-color: var(--yellow); }
+    .log-entry.danger { border-color: var(--red); }
+    .log-entry.ok     { border-color: var(--green); }
+    .log-icon { font-size: 13px; flex-shrink: 0; }
+    @keyframes fadeIn { from { opacity:0; transform: translateY(-4px); } to { opacity:1; } }
+
+    /* ── Telemetry table ───────────────────────────────────────────── */
+    .telemetry-table { width: 100%; border-collapse: collapse; }
+    .telemetry-table td {
+      padding: 3px 0;
+      font-size: 12px;
+    }
+    .telemetry-table td:first-child { color: var(--muted); width: 50%; }
+    .telemetry-table td:last-child  { font-weight: 600; text-align: right; }
+
+    /* ── LLM advisory pill ─────────────────────────────────────────── */
+    .llm-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      transition: border-color .2s, color .2s;
+    }
+    .llm-pill.CONTINUE  { border-color: var(--green);  color: var(--green); }
+    .llm-pill.BRAKE     { border-color: var(--yellow); color: var(--yellow); }
+    .llm-pill.STOP      { border-color: var(--red);    color: var(--red); }
+    .llm-pill.OVERTAKE  { border-color: var(--accent); color: var(--accent); }
+    .llm-pill.EXIT_RIGHT,
+    .llm-pill.EXIT_LEFT { border-color: var(--orange); color: var(--orange); }
+
+    /* ── Footer ────────────────────────────────────────────────────── */
+    .footer {
+      grid-area: footer;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 6px 20px;
+      font-size: 11px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    /* ── Scrollbar styling ─────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+<div class="dashboard">
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header class="header">
+    <span class="header-title">🚛 ETS2 AI Driver — Live Dashboard</span>
+    <div class="header-status">
+      <span class="metric-pill" id="fps-pill">FPS: —</span>
+      <span class="metric-pill" id="obstacle-pill">Obstacles: 0</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <div class="status-dot" id="conn-dot"></div>
+        <span id="conn-label">Connecting…</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Main content ───────────────────────────────────────────────────── -->
+  <main class="main">
+
+    <!-- Vision feed -->
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div class="vision-wrap" id="vision-wrap">
+        <span class="vision-placeholder">Waiting for first frame…</span>
+        <div class="vision-overlay" id="vision-overlay"></div>
+      </div>
+    </div>
+
+    <!-- Control gauges -->
+    <div class="gauges-row">
+
+      <!-- Steering -->
+      <div class="gauge-card">
+        <div class="gauge-label">Steering</div>
+        <div class="gauge-value" id="steer-val">0.00</div>
+        <div class="steer-bar-wrap">
+          <div class="steer-bar-center"></div>
+          <div class="steer-bar-fill" id="steer-fill"></div>
+        </div>
+        <!-- arc gauge -->
+        <div class="arc-gauge">
+          <svg width="100" height="56" viewBox="-50 -50 100 60">
+            <path class="arc-track"
+              d="M -40,0 A 40,40 0 0,1 40,0" />
+            <path class="arc-fill" id="steer-arc"
+              d="M -40,0 A 40,40 0 0,1 40,0"
+              stroke="var(--accent)"
+              stroke-dasharray="125.66"
+              stroke-dashoffset="125.66" />
+          </svg>
+        </div>
+      </div>
+
+      <!-- Throttle -->
+      <div class="gauge-card">
+        <div class="gauge-label">Throttle</div>
+        <div class="gauge-value" id="thr-val" style="color:var(--green);">0%</div>
+        <svg width="90" height="90" viewBox="-45 -45 90 90" class="arc-gauge">
+          <circle class="arc-track" r="34" />
+          <circle class="arc-fill" id="thr-arc" r="34"
+            stroke="var(--green)"
+            stroke-dasharray="213.63"
+            stroke-dashoffset="213.63"
+            transform="rotate(-90)" />
+        </svg>
+      </div>
+
+      <!-- Brake -->
+      <div class="gauge-card">
+        <div class="gauge-label">Brake</div>
+        <div class="gauge-value" id="brk-val" style="color:var(--red);">0%</div>
+        <svg width="90" height="90" viewBox="-45 -45 90 90" class="arc-gauge">
+          <circle class="arc-track" r="34" />
+          <circle class="arc-fill" id="brk-arc" r="34"
+            stroke="var(--red)"
+            stroke-dasharray="213.63"
+            stroke-dashoffset="213.63"
+            transform="rotate(-90)" />
+        </svg>
+      </div>
+
+    </div><!-- /gauges-row -->
+
+  </main>
+
+  <!-- ── Sidebar ────────────────────────────────────────────────────────── -->
+  <aside class="sidebar">
+
+    <!-- Speed limit sign -->
+    <div class="sidebar-section">
+      <div class="section-title">Speed Limit</div>
+      <div class="speed-sign-wrap">
+        <div class="speed-sign no-sign" id="speed-sign">
+          <span class="speed-sign-value" id="speed-sign-val">—</span>
+        </div>
+        <div style="flex:1;">
+          <div class="speed-sign-meta" id="speed-sign-meta">No sign detected</div>
+          <div class="conf-bar-wrap">
+            <div class="conf-bar" id="speed-conf-bar" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- GPS mini-map -->
+    <div class="sidebar-section">
+      <div class="section-title">GPS Mini-Map</div>
+      <div class="gps-wrap" id="gps-wrap">
+        <span class="gps-placeholder">No GPS feed</span>
+      </div>
+    </div>
+
+    <!-- LLM advisory -->
+    <div class="sidebar-section">
+      <div class="section-title">AI Planner</div>
+      <div id="llm-pill-wrap" style="margin-bottom:8px;">
+        <span class="llm-pill CONTINUE" id="llm-pill">🤖 CONTINUE</span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);">
+        Avoidance: <strong id="avoid-label">none</strong>
+      </div>
+    </div>
+
+    <!-- Decision reasoning log -->
+    <div class="sidebar-section" style="flex:1;">
+      <div class="section-title">Thought Process</div>
+      <div class="decision-log" id="decision-log">
+        <div class="log-entry">
+          <span class="log-icon">💤</span>
+          <span>Waiting for driver data…</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telemetry metrics -->
+    <div class="sidebar-section">
+      <div class="section-title">Telemetry</div>
+      <table class="telemetry-table">
+        <tr><td>Lane error</td>  <td id="t-lane">—</td></tr>
+        <tr><td>GPS offset</td>  <td id="t-gps">—</td></tr>
+        <tr><td>Combined err</td><td id="t-comb">—</td></tr>
+        <tr><td>Steering</td>    <td id="t-steer">—</td></tr>
+        <tr><td>Throttle</td>    <td id="t-thr">—</td></tr>
+        <tr><td>Brake</td>       <td id="t-brk">—</td></tr>
+      </table>
+    </div>
+
+  </aside>
+
+  <!-- ── Footer ─────────────────────────────────────────────────────────── -->
+  <footer class="footer">
+    ETS2 AI Driver Dashboard &mdash; real-time telemetry &amp; vision monitoring
+  </footer>
+
+</div><!-- /dashboard -->
+
+<script>
+(function () {
+  "use strict";
+
+  /* ── Socket.IO connection ─────────────────────────────────────────────── */
+  const socket = io({ transports: ["websocket", "polling"] });
+  const dot    = document.getElementById("conn-dot");
+  const label  = document.getElementById("conn-label");
+
+  socket.on("connect", () => {
+    dot.classList.add("connected");
+    label.textContent = "Connected";
+  });
+  socket.on("disconnect", () => {
+    dot.classList.remove("connected");
+    label.textContent = "Disconnected";
+  });
+  socket.on("connect_error", () => {
+    label.textContent = "Connection error";
+  });
+
+  /* ── Helpers ──────────────────────────────────────────────────────────── */
+  const el  = id => document.getElementById(id);
+  const pct = v  => `${Math.round(v * 100)}%`;
+
+  // Full-circle arc: circumference = 2π×34 ≈ 213.63
+  function setCircleArc(arcId, value) {
+    const circ = 213.63;
+    const offset = circ - Math.max(0, Math.min(1, value)) * circ;
+    el(arcId).style.strokeDashoffset = offset.toFixed(2);
+  }
+
+  // Half-circle arc: arc-length ≈ π×40 ≈ 125.66
+  function setHalfArc(arcId, value) {
+    // value in [-1, 1]; map to [0, 1] for the half arc
+    const circ = 125.66;
+    const norm = (Math.max(-1, Math.min(1, value)) + 1) / 2;
+    const offset = circ - norm * circ;
+    el(arcId).style.strokeDashoffset = offset.toFixed(2);
+    // colour: left=blue, centre=white, right=orange
+    const hue = norm * 60 + 180;   // 180° (blue) → 240° (orange-ish)
+    el(arcId).style.stroke = norm < 0.45 ? "var(--accent)" :
+                              norm > 0.55 ? "var(--orange)" : "var(--text)";
+  }
+
+  function setSteerBar(value) {
+    const norm = (Math.max(-1, Math.min(1, value)) + 1) / 2;  // 0..1
+    const fill = el("steer-fill");
+    if (norm >= 0.5) {
+      fill.style.left  = "50%";
+      fill.style.width = ((norm - 0.5) * 100) + "%";
+      fill.style.background = "var(--orange)";
+    } else {
+      fill.style.left  = (norm * 100) + "%";
+      fill.style.width = ((0.5 - norm) * 100) + "%";
+      fill.style.background = "var(--accent)";
+    }
+  }
+
+  /* ── Decision log ─────────────────────────────────────────────────────── */
+  const MAX_LOG = 30;
+  const logEl = el("decision-log");
+
+  function addLogEntries(reasons, action, avoidance) {
+    // Clear stale entries beyond limit
+    while (logEl.children.length > MAX_LOG) logEl.removeChild(logEl.lastChild);
+
+    const entries = [...reasons];
+
+    // Synthesise from action if no explicit reasons
+    if (entries.length === 0) {
+      const actionIcons = {
+        CONTINUE: ["ok",    "▶",  "Lane-following — continuing."],
+        BRAKE:    ["warn",  "⚠️", "LLM suggests braking."],
+        STOP:     ["danger","🛑", "LLM commands STOP."],
+        OVERTAKE: ["action","⬆️", "LLM suggests overtake."],
+        EXIT_RIGHT:["action","↗️","LLM: take right exit."],
+        EXIT_LEFT: ["action","↖️","LLM: take left exit."],
+      };
+      const [cls, icon, msg] = actionIcons[action] || ["ok","▶","Continuing."];
+      entries.push({ cls, icon, msg });
+    }
+
+    if (avoidance && avoidance !== "none") {
+      entries.unshift({ cls: "danger", icon: "🚨", msg: `Obstacle: ${avoidance}` });
+    }
+
+    // Prepend new entries
+    entries.reverse().forEach(({ cls, icon, msg } = {}) => {
+      const div = document.createElement("div");
+      div.className = `log-entry ${cls || "ok"}`;
+      div.innerHTML = `<span class="log-icon">${icon || "•"}</span><span>${msg}</span>`;
+      logEl.insertBefore(div, logEl.firstChild);
+    });
+
+    // Trim overflow
+    while (logEl.children.length > MAX_LOG) logEl.removeChild(logEl.lastChild);
+  }
+
+  /* ── Vision frame ─────────────────────────────────────────────────────── */
+  let visionImg = null;
+  function setVisionFrame(b64, obstacles) {
+    const wrap = el("vision-wrap");
+    if (!b64) return;
+
+    if (!visionImg) {
+      wrap.innerHTML = "";   // remove placeholder
+      visionImg = document.createElement("img");
+      visionImg.alt = "AI Vision";
+      wrap.appendChild(visionImg);
+      // Re-add overlay
+      const ov = document.createElement("div");
+      ov.className = "vision-overlay";
+      ov.id = "vision-overlay";
+      wrap.appendChild(ov);
+    }
+    visionImg.src = b64;
+
+    const ov = el("vision-overlay");
+    if (ov) {
+      ov.innerHTML = `
+        <span class="badge ${obstacles > 0 ? 'danger' : 'ok'}">
+          ${obstacles > 0 ? '🚗 ' + obstacles + ' obstacle(s)' : '✅ Road clear'}
+        </span>`;
+    }
+  }
+
+  /* ── GPS mini-map ─────────────────────────────────────────────────────── */
+  let gpsImg = null;
+  function setGpsFrame(b64) {
+    const wrap = el("gps-wrap");
+    if (!b64) return;
+    if (!gpsImg) {
+      wrap.innerHTML = "";
+      gpsImg = document.createElement("img");
+      gpsImg.alt = "GPS Mini-Map";
+      gpsImg.style.cssText = "width:100%;height:100%;object-fit:contain;";
+      wrap.appendChild(gpsImg);
+    }
+    gpsImg.src = b64;
+  }
+
+  /* ── Speed limit sign ─────────────────────────────────────────────────── */
+  function updateSpeedSign(limit, confidence) {
+    const sign = el("speed-sign");
+    const val  = el("speed-sign-val");
+    const meta = el("speed-sign-meta");
+    const bar  = el("speed-conf-bar");
+
+    if (limit !== null && limit !== undefined) {
+      sign.classList.remove("no-sign");
+      val.textContent  = limit;
+      meta.textContent = `${Math.round(confidence * 100)}% confidence`;
+    } else {
+      sign.classList.add("no-sign");
+      val.textContent  = "—";
+      meta.textContent = "No sign detected";
+    }
+    bar.style.width = `${Math.round((confidence || 0) * 100)}%`;
+  }
+
+  /* ── LLM pill ─────────────────────────────────────────────────────────── */
+  const actionEmoji = {
+    CONTINUE:  "▶",  BRAKE: "⚠️", STOP: "🛑",
+    OVERTAKE: "⬆️", EXIT_RIGHT: "↗️", EXIT_LEFT: "↖️",
+  };
+  function updateLlmPill(action) {
+    const pill = el("llm-pill");
+    pill.className = `llm-pill ${action}`;
+    pill.textContent = `${actionEmoji[action] || "🤖"} ${action}`;
+  }
+
+  /* ── Main telemetry handler ───────────────────────────────────────────── */
+  socket.on("telemetry", function (d) {
+    // Header metrics
+    el("fps-pill").textContent      = `FPS: ${d.fps}`;
+    el("obstacle-pill").textContent = `Obstacles: ${d.obstacle_count || 0}`;
+
+    // Steering
+    setSteerBar(d.steering);
+    setHalfArc("steer-arc", d.steering);
+    el("steer-val").textContent = (d.steering >= 0 ? "+" : "") + d.steering.toFixed(3);
+
+    // Throttle
+    setCircleArc("thr-arc", d.throttle);
+    el("thr-val").textContent = pct(d.throttle);
+
+    // Brake
+    setCircleArc("brk-arc", d.brake);
+    el("brk-val").textContent = pct(d.brake);
+    el("brk-val").style.color = d.brake > 0.5 ? "var(--red)" : "var(--orange)";
+
+    // Frames
+    setVisionFrame(d.frame_b64, d.obstacle_count);
+    setGpsFrame(d.gps_b64);
+
+    // Speed limit
+    updateSpeedSign(d.speed_limit, d.speed_limit_confidence);
+
+    // LLM advisory
+    updateLlmPill(d.llm_action || "CONTINUE");
+    el("avoid-label").textContent = d.avoidance_action || "none";
+
+    // Decision log
+    const reasons = (d.decision_reasons || []).map(r => {
+      if (typeof r === "string") return { cls: "ok", icon: "•", msg: r };
+      return r;
+    });
+    addLogEntries(reasons, d.llm_action, d.avoidance_action);
+
+    // Telemetry table
+    el("t-lane").textContent  = d.lane_error   != null ? `${d.lane_error.toFixed(1)} px` : "—";
+    el("t-gps").textContent   = d.gps_error    != null ? `${d.gps_error.toFixed(1)} px`  : "—";
+    el("t-comb").textContent  = d.combined_error != null ? `${d.combined_error.toFixed(1)} px` : "—";
+    el("t-steer").textContent = d.steering != null ? d.steering.toFixed(4) : "—";
+    el("t-thr").textContent   = d.throttle != null ? pct(d.throttle) : "—";
+    el("t-brk").textContent   = d.brake    != null ? pct(d.brake)    : "—";
+  });
+
+})();
+</script>
+</body>
+</html>

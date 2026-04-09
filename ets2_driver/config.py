@@ -16,7 +16,7 @@ Typical tuning workflow:
 
 import os
 from dataclasses import dataclass, field
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +165,63 @@ class DetectionConfig:
 
 
 # ---------------------------------------------------------------------------
+# Speed-limit sign detection
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SpeedLimitConfig:
+    """Configuration for the OpenCV speed-limit sign detector.
+
+    The ROI defaults to the upper-left quadrant of a 1280×720 frame, which is
+    where ETS2 renders road signs.  Adjust if your UI scale or resolution
+    differs.
+    """
+
+    # Region-of-interest within the captured frame (pixels)
+    roi_top: int    = int(os.getenv("ETS2_SL_ROI_TOP",    "0"))
+    roi_bottom: int = int(os.getenv("ETS2_SL_ROI_BOTTOM", "360"))
+    roi_left: int   = int(os.getenv("ETS2_SL_ROI_LEFT",   "0"))
+    roi_right: int  = int(os.getenv("ETS2_SL_ROI_RIGHT",  "640"))
+
+    # Hough circle transform parameters
+    min_radius_px: int  = int(os.getenv("ETS2_SL_MIN_R",    "10"))
+    max_radius_px: int  = int(os.getenv("ETS2_SL_MAX_R",    "60"))
+    min_dist_px: int    = int(os.getenv("ETS2_SL_MIN_DIST", "50"))
+    hough_param1: float = float(os.getenv("ETS2_SL_P1",     "100"))
+    hough_param2: float = float(os.getenv("ETS2_SL_P2",     "25"))
+
+    # Minimum confidence to accept a detection [0, 1]
+    confidence_threshold: float = float(os.getenv("ETS2_SL_CONF", "0.40"))
+
+    # Run detection every N frames (1 = every frame, 3 = every 3rd frame, …)
+    detection_every_n_frames: int = int(os.getenv("ETS2_SL_SKIP", "3"))
+
+
+# ---------------------------------------------------------------------------
+# Web dashboard
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DashboardConfig:
+    """Configuration for the real-time web monitoring dashboard."""
+
+    # Set to false to disable the dashboard entirely
+    enabled: bool = os.getenv("ETS2_DASH_ENABLED", "true").lower() == "true"
+
+    host: str = os.getenv("ETS2_DASH_HOST", "0.0.0.0")
+    port: int = int(os.getenv("ETS2_DASH_PORT", "5000"))
+
+    # Maximum Socket.IO push rate (Hz)
+    update_hz: float = float(os.getenv("ETS2_DASH_HZ", "10"))
+
+    # JPEG quality for the vision frame preview [0–100]
+    frame_quality: int = int(os.getenv("ETS2_DASH_QUALITY", "60"))
+
+    # Number of decision-log entries shown in the dashboard
+    max_log_entries: int = int(os.getenv("ETS2_DASH_LOG", "20"))
+
+
+# ---------------------------------------------------------------------------
 # Gear shifting
 # ---------------------------------------------------------------------------
 
@@ -233,6 +290,8 @@ class ETS2Config:
     pid: PidConfig = field(default_factory=PidConfig)
     speed: SpeedConfig = field(default_factory=SpeedConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
+    speed_limit: SpeedLimitConfig = field(default_factory=SpeedLimitConfig)
     gear: GearConfig = field(default_factory=GearConfig)
     llm: LlmConfig = field(default_factory=LlmConfig)
     loop: LoopConfig = field(default_factory=LoopConfig)
+    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
