@@ -201,6 +201,11 @@ class SpeedLimitConfig:
     # ETS2's unrestricted motorway speed is 130 km/h (default European limit).
     max_reference_speed_kph: int = int(os.getenv("ETS2_SL_MAX_SPEED", "130"))
 
+    # Seconds to keep showing a detected speed limit after the sign leaves
+    # frame.  Prevents dashboard flickering when the sign briefly disappears.
+    # Set to 0 to disable persistence (always show live result only).
+    decay_s: float = float(os.getenv("ETS2_SL_DECAY", "4.0"))
+
 
 # ---------------------------------------------------------------------------
 # Web dashboard

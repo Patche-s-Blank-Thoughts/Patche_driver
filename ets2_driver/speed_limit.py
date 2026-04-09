@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -77,6 +78,11 @@ class SpeedLimitDetector:
         self._last_result: SpeedLimitResult = SpeedLimitResult(
             limit_kph=None, confidence=0.0, bounding_circle=None, raw_ocr_text=""
         )
+        # Persistence: track the last *confirmed* detection timestamp so the
+        # result stays alive for decay_s seconds even when no sign is visible.
+        self._last_confirmed_result: SpeedLimitResult = self._last_result
+        self._last_confirmed_time: float = 0.0
+
         self._ocr_available: bool = False
 
         try:
@@ -96,6 +102,10 @@ class SpeedLimitDetector:
     def detect(self, frame: np.ndarray) -> SpeedLimitResult:
         """Detect a speed-limit sign in *frame* and return the result.
 
+        When no sign is found but a prior detection is still within the
+        configured ``decay_s`` window, the previous result is returned so
+        that the dashboard and throttle-cap logic don't flicker.
+
         Parameters
         ----------
         frame:
@@ -104,7 +114,8 @@ class SpeedLimitDetector:
         Returns
         -------
         SpeedLimitResult
-            Best detection result.  ``confidence == 0.0`` means no sign found.
+            Best detection result (possibly from the persistence cache).
+            ``confidence == 0.0`` means neither a live nor a cached sign.
         """
         slcfg = self.cfg.speed_limit
 
@@ -114,7 +125,7 @@ class SpeedLimitDetector:
             slcfg.roi_left : slcfg.roi_right,
         ]
         if roi.size == 0:
-            return self._no_result()
+            return self._get_persistent_or_empty()
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -131,7 +142,7 @@ class SpeedLimitDetector:
         )
 
         if circles is None:
-            return self._no_result()
+            return self._get_persistent_or_empty()
 
         circles = np.round(circles[0, :]).astype(int)
 
@@ -145,21 +156,41 @@ class SpeedLimitDetector:
                 best = result
 
         if best is None or best_conf < slcfg.confidence_threshold:
-            return self._no_result()
+            return self._get_persistent_or_empty()
 
+        # Live detection — update persistent cache
+        self._last_confirmed_result = best
+        self._last_confirmed_time = time.monotonic()
         self._last_result = best
         return best
 
     @property
     def last_result(self) -> SpeedLimitResult:
-        """Most recent detection result (cached between calls)."""
+        """Most recent detection result, respecting the decay window.
+
+        If no live sign was detected but the last confirmed result is still
+        within ``decay_s`` seconds, that cached result is returned (with its
+        original confidence) so callers see a stable value.
+        """
         return self._last_result
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _no_result(self) -> SpeedLimitResult:
+    def _get_persistent_or_empty(self) -> SpeedLimitResult:
+        """Return the cached result if within decay window, else empty."""
+        decay = self.cfg.speed_limit.decay_s
+        if (
+            decay > 0
+            and self._last_confirmed_result.limit_kph is not None
+            and (time.monotonic() - self._last_confirmed_time) < decay
+        ):
+            # Keep returning the confirmed result; don't overwrite _last_result
+            # so the caller always sees the persisted value.
+            self._last_result = self._last_confirmed_result
+            return self._last_confirmed_result
+
         empty = SpeedLimitResult(
             limit_kph=None, confidence=0.0, bounding_circle=None, raw_ocr_text=""
         )
@@ -231,7 +262,13 @@ class SpeedLimitDetector:
     def _run_ocr(
         self, roi: np.ndarray, cx: int, cy: int, r: int
     ) -> Tuple[Optional[int], str]:
-        """Crop the sign interior and run pytesseract to read the number."""
+        """Crop the sign interior and run pytesseract to read the number.
+
+        Multiple thresholding strategies are tried (Otsu binary, Otsu
+        binary-inv, adaptive) and both PSM 8 (single word) and PSM 7
+        (single line) are attempted.  The reading with the most digits that
+        snaps to a known ETS2 speed limit wins.
+        """
         try:
             import pytesseract  # type: ignore
 
@@ -242,30 +279,72 @@ class SpeedLimitDetector:
             if crop.size == 0:
                 return None, ""
 
-            # Upscale small crops for better OCR accuracy
+            # Upscale small crops — minimum 96 px diameter for reliable OCR
             diam = max(x2 - x1, y2 - y1)
-            scale = max(1, 64 // (diam + 1) + 1)
-            crop_up = cv2.resize(
-                crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
-            )
+            target = 96
+            if diam < target:
+                scale = target / max(diam, 1)
+                crop = cv2.resize(
+                    crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
+                )
 
-            gray = cv2.cvtColor(crop_up, cv2.COLOR_BGR2GRAY)
-            _, thresh = cv2.threshold(
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+
+            # Apply CLAHE to normalise contrast before thresholding
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+            gray = clahe.apply(gray)
+
+            # Build candidate threshold images
+            _, otsu_bin = cv2.threshold(
+                gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
+            _, otsu_inv = cv2.threshold(
                 gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
             )
+            adapt = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV, 11, 2,
+            )
+            candidates = [otsu_bin, otsu_inv, adapt]
 
-            cfg_str = "--psm 8 --oem 3 -c tessedit_char_whitelist=0123456789"
-            raw = pytesseract.image_to_string(thresh, config=cfg_str).strip()
-            nums = re.findall(r"\d+", raw)
-            if not nums:
-                return None, raw
+            tess_configs = [
+                "--psm 8 --oem 3 -c tessedit_char_whitelist=0123456789",
+                "--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789",
+            ]
 
-            val = int(nums[0])
-            # Snap to nearest known ETS2 speed limit if within ±5 km/h
-            closest = min(self.KNOWN_LIMITS, key=lambda x: abs(x - val))
-            if abs(closest - val) <= 5:
-                return closest, raw
-            return val, raw
+            best_val: Optional[int] = None
+            best_raw: str = ""
+
+            for img in candidates:
+                for cfg_str in tess_configs:
+                    try:
+                        raw = pytesseract.image_to_string(img, config=cfg_str).strip()
+                    except Exception:
+                        continue
+                    nums = re.findall(r"\d+", raw)
+                    if not nums:
+                        continue
+                    val = int(nums[0])
+                    closest = min(self.KNOWN_LIMITS, key=lambda x: abs(x - val))
+                    if abs(closest - val) <= 5:
+                        # Prefer readings that snap to a known limit
+                        best_val = closest
+                        best_raw = raw
+                        break  # good reading found for this threshold image
+                if best_val is not None:
+                    break
+
+            if best_val is not None:
+                return best_val, best_raw
+
+            # No reading snapped to a known limit — return the first number found
+            for img in candidates:
+                raw = pytesseract.image_to_string(img, config=tess_configs[0]).strip()
+                nums = re.findall(r"\d+", raw)
+                if nums:
+                    return int(nums[0]), raw
+
+            return None, ""
 
         except Exception as exc:
             logger.debug("OCR failed: %s", exc)

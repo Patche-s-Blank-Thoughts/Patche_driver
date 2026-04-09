@@ -28,10 +28,11 @@ Execution flow per frame
 
 from __future__ import annotations
 
+import collections
 import logging
 import signal
 import time
-from typing import List, Optional
+from typing import Deque, List, Optional
 
 import cv2
 
@@ -81,9 +82,9 @@ class ETS2Driver:
         self.speed_limit_detector = SpeedLimitDetector(self.cfg)
         self.dashboard = DashboardServer(self.cfg)
 
-        # Running FPS measurement
-        self._fps_frame_count: int = 0
-        self._fps_window_start: float = time.monotonic()
+        # Rolling FPS measurement — keep the last 60 tick timestamps so that
+        # the displayed FPS updates every frame rather than every 5 seconds.
+        self._tick_times: Deque[float] = collections.deque(maxlen=60)
         self._current_fps: float = 0.0
 
         # Speed-limit frame-skip counter
@@ -132,7 +133,6 @@ class ETS2Driver:
         """
         self._running = True
         frame_interval = 1.0 / max(1, self.cfg.loop.fps)
-        frame_count: int = 0
         last_fps_log: float = time.monotonic()
 
         # Start the dashboard server (non-blocking daemon thread)
@@ -142,8 +142,6 @@ class ETS2Driver:
 
         while self._running:
             t_start = time.monotonic()
-            frame_count += 1
-            self._fps_frame_count += 1
 
             try:
                 self._tick()
@@ -152,17 +150,22 @@ class ETS2Driver:
                 # Brief pause before retrying — avoids tight error loops
                 time.sleep(self._error_retry_delay)
 
-            # FPS logging every 5 s
+            # Rolling FPS: record this tick's timestamp and compute rate over
+            # the window stored in the deque (up to the last 60 ticks).
             now = time.monotonic()
+            self._tick_times.append(now)
+            if len(self._tick_times) >= 2:
+                window = self._tick_times[-1] - self._tick_times[0]
+                if window > 0:
+                    self._current_fps = (len(self._tick_times) - 1) / window
+
+            # Log FPS every 5 s (unchanged cadence, but uses smooth value)
             if now - last_fps_log >= 5.0:
-                elapsed = now - last_fps_log
-                self._current_fps = frame_count / elapsed
                 logger.info("Running at ~%.1f FPS", self._current_fps)
-                frame_count = 0
                 last_fps_log = now
 
             # Sleep to maintain target FPS
-            elapsed_tick = time.monotonic() - t_start
+            elapsed_tick = now - t_start
             sleep_time = frame_interval - elapsed_tick
             if sleep_time > 0:
                 time.sleep(sleep_time)
