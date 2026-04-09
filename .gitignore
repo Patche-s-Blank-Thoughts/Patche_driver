@@ -1,0 +1,33 @@
+# Python byte-code
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# YOLO model weights (large files — download on first run)
+*.pt
+
+# Test coverage
+.coverage
+htmlcov/
+
+# Logs
+*.log
