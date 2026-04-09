@@ -196,6 +196,11 @@ class SpeedLimitConfig:
     # Run detection every N frames (1 = every frame, 3 = every 3rd frame, …)
     detection_every_n_frames: int = int(os.getenv("ETS2_SL_SKIP", "3"))
 
+    # Reference speed (km/h) used to scale the throttle cap.
+    # At this speed, cruise_throttle is applied without reduction.
+    # ETS2's unrestricted motorway speed is 130 km/h (default European limit).
+    max_reference_speed_kph: int = int(os.getenv("ETS2_SL_MAX_SPEED", "130"))
+
 
 # ---------------------------------------------------------------------------
 # Web dashboard

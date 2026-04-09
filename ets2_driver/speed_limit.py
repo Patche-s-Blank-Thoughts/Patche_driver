@@ -68,6 +68,8 @@ class SpeedLimitDetector:
     """
 
     #: km/h values that appear on ETS2 speed limit signs.
+    #: Based on standard European road speed limits as rendered in ETS2.
+    #: Used to snap imprecise OCR readings to the nearest realistic value.
     KNOWN_LIMITS = frozenset({20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130})
 
     def __init__(self, cfg: ETS2Config) -> None:

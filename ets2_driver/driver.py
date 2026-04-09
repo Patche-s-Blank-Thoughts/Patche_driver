@@ -402,10 +402,12 @@ class ETS2Driver:
         throttle, brake = self.speed_ctrl.compute(combined_error)
 
         # --- Speed-limit cap ---
-        # Map detected km/h limit to a proportional max throttle.
-        # 130 km/h ≈ full cruise throttle; lower limits scale it down.
+        # Scale the allowed throttle proportionally: at the reference (max)
+        # speed the full cruise_throttle applies; lower limits reduce it
+        # linearly.  Reference speed is configurable via ETS2_SL_MAX_SPEED.
         if speed_limit is not None and speed_limit > 0:
-            max_thr = scfg.cruise_throttle * min(1.0, speed_limit / 130.0)
+            ref_speed = max(1, self.cfg.speed_limit.max_reference_speed_kph)
+            max_thr = scfg.cruise_throttle * min(1.0, speed_limit / ref_speed)
             throttle = min(throttle, max_thr)
 
         return steer, throttle, brake

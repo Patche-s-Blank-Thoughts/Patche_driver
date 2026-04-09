@@ -254,6 +254,11 @@ class DashboardServer:
                 self._app,
                 host=dcfg.host,
                 port=dcfg.port,
+                # allow_unsafe_werkzeug is required when running Flask's
+                # development server (Werkzeug) inside a non-main thread.
+                # This is intentional — the dashboard is an internal monitoring
+                # tool, not a public-facing service.  For a production
+                # deployment, replace with a proper WSGI server (e.g. gunicorn).
                 allow_unsafe_werkzeug=True,
                 log_output=False,
             )
