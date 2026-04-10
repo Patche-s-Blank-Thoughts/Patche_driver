@@ -590,7 +590,10 @@ class ETS2Driver:
         # speed the full cruise_throttle applies; lower limits reduce it
         # linearly.  Reference speed is configurable via ETS2_SL_MAX_SPEED.
         if speed_limit is not None and speed_limit > 0:
-            ref_speed = max(1, self.cfg.speed_limit.max_reference_speed_kph)
+            # Clamp to [1, 200] km/h: 1 prevents division-by-zero, 200 is the
+            # practical upper limit for ETS2 (exceeding it would make the cap
+            # ineffective and produce unpredictable throttle scaling).
+            ref_speed = max(1, min(200, self.cfg.speed_limit.max_reference_speed_kph))
             max_thr = scfg.cruise_throttle * min(1.0, speed_limit / ref_speed)
             throttle = min(throttle, max_thr)
 
