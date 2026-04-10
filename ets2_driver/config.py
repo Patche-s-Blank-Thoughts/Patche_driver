@@ -29,8 +29,8 @@ class CaptureConfig:
 
     top: int = int(os.getenv("ETS2_CAP_TOP", "0"))
     left: int = int(os.getenv("ETS2_CAP_LEFT", "0"))
-    width: int = int(os.getenv("ETS2_CAP_WIDTH", "1280"))
-    height: int = int(os.getenv("ETS2_CAP_HEIGHT", "720"))
+    width: int = int(os.getenv("ETS2_CAP_WIDTH", "2560"))
+    height: int = int(os.getenv("ETS2_CAP_HEIGHT", "1080"))
 
     @property
     def as_dict(self) -> Dict[str, int]:
@@ -62,12 +62,11 @@ class LaneConfig:
 class GpsConfig:
     """Crop region and HSV thresholds for the route-advisor mini-map."""
 
-    # Pixel offsets from the bottom-right corner (default ETS2 1280×720 layout)
-    top: int = int(os.getenv("ETS2_GPS_TOP", "520"))
-    left: int = int(os.getenv("ETS2_GPS_LEFT", "1050"))
-    bottom: int = int(os.getenv("ETS2_GPS_BOTTOM", "720"))
-    right: int = int(os.getenv("ETS2_GPS_RIGHT", "1280"))
-
+    # Pixel offsets from the bottom-right corner (default ETS2 2560×1080 layout)
+    top: int = int(os.getenv("ETS2_GPS_TOP", "0"))
+    left: int = int(os.getenv("ETS2_GPS_LEFT", "0"))
+    bottom: int = int(os.getenv("ETS2_GPS_BOTTOM", "1080"))
+    right: int = int(os.getenv("ETS2_GPS_RIGHT", "2560"))
     # HSV bounds for the red route line drawn on the mini-map
     lower_red1: Tuple[int, int, int] = (0, 120, 100)
     upper_red1: Tuple[int, int, int] = (10, 255, 255)
