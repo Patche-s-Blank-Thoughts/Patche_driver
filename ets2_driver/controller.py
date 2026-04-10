@@ -159,11 +159,17 @@ class VJoyController:
         self._set_unipolar_axis(getattr(self, "_HID_Z", 0x32), value, "brake")
 
     def release_all(self) -> None:
-        """Centre steering, release throttle and brake (safe-stop state)."""
+        """Centre steering, cut throttle, and apply full brake to halt the vehicle.
+
+        Full brake (1.0) is used instead of zero so that ETS2 actively stops
+        the truck rather than letting it coast.  When the driver process exits
+        vJoy retains the last written axis values, so this must be a *stop*
+        command, not a simple axis-release.
+        """
         self.set_steering(0.0)
         self.set_throttle(0.0)
-        self.set_brake(0.0)
-        logger.info("All vJoy axes released to zero.")
+        self.set_brake(1.0)
+        logger.info("All vJoy axes released — full brake applied to halt vehicle.")
 
 
 class PIDSteering:
@@ -265,13 +271,34 @@ class PIDSteering:
         raw = max(-1.0, min(1.0, raw))
         self.last_raw = raw
 
-        # Exponential smoothing on the raw output
-        alpha = pcfg.steer_smoothing
+        # Adaptive smoothing: increase smoothing at higher speeds so the truck
+        # stays stable on fast straights without becoming sluggish at low speed.
+        # _SMOOTH_SPEED_REF_KPH is the reference speed at which the maximum
+        # smoothing boost (0.15) is fully applied.  The boost is capped so the
+        # combined alpha never exceeds 0.95.
+        _SMOOTH_SPEED_REF_KPH = 200.0  # speed at which max smoothing boost is reached
+        speed_smooth_boost = min(0.15, speed_kph / _SMOOTH_SPEED_REF_KPH * 0.15)
+        alpha = min(0.95, pcfg.steer_smoothing + speed_smooth_boost)
         smoothed = alpha * self._smoothed_steer + (1.0 - alpha) * raw
 
-        # Rate limiting — cap how much the steering can change in one frame
+        # Speed-aware rate limiting: reduce the maximum steering rate at higher
+        # speeds to prevent jerky high-speed corrections.
+        # _RATE_SPEED_SCALE_KPH is the speed at which rate scaling reaches its
+        # minimum (0.4).  At 0 km/h scale=1.0; at this speed scale=0.4.
+        _RATE_SPEED_SCALE_KPH = 150.0  # speed at which rate scale reaches minimum
+        speed_scale = max(0.4, 1.0 - speed_kph / _RATE_SPEED_SCALE_KPH)
+
+        # Variable turn rate: allow a faster rate when the current steering
+        # demand is high (sharp turns need quick response) and throttle it back
+        # during gentle straight-line corrections.
+        # turn_scale: 0.5 at centre → 1.0 at full lock.
+        turn_scale = 0.5 + 0.5 * abs(self._smoothed_steer)
+
+        effective_rate = pcfg.max_steer_rate * speed_scale * turn_scale
+
+        # Apply rate limiter to the smoothed output
         delta = smoothed - self._smoothed_steer
-        delta = max(-pcfg.max_steer_rate, min(pcfg.max_steer_rate, delta))
+        delta = max(-effective_rate, min(effective_rate, delta))
         self._smoothed_steer += delta
 
         return max(-1.0, min(1.0, self._smoothed_steer))
@@ -404,4 +431,13 @@ class SpeedController:
 
         throttle = max(0.0, min(1.0, self._smoothed_throttle))
         brake = max(0.0, min(1.0, self._smoothed_brake))
+
+        # Strict mutual exclusion: applying throttle and brake simultaneously
+        # causes erratic behaviour.  If any brake is active, cut throttle
+        # to zero and drain the smoothed throttle state to prevent it from
+        # immediately bouncing back on the next frame.
+        if brake > 0.0:
+            throttle = 0.0
+            self._smoothed_throttle = 0.0
+
         return throttle, brake

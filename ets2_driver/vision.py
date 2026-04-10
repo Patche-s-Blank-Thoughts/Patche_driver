@@ -7,8 +7,9 @@ without a live game window.
 
 from __future__ import annotations
 
+import collections
 import logging
-from typing import List, Optional, Tuple
+from typing import Deque, List, Optional, Tuple
 
 import cv2
 import mss
@@ -28,6 +29,11 @@ class VisionSystem:
         Top-level :class:`~ets2_driver.config.ETS2Config` instance.
     """
 
+    # Number of frames kept in the GPS-direction rolling median buffer.
+    # A window of 5 frames at 30 FPS gives ~167 ms of smoothing — enough to
+    # suppress single-frame mini-map redraw artefacts without lagging the signal.
+    _GPS_MEDIAN_WINDOW: int = 5
+
     def __init__(self, cfg: ETS2Config) -> None:
         self.cfg = cfg
         self._sct = mss.mss()
@@ -35,6 +41,10 @@ class VisionSystem:
         # Debug / telemetry — set on each call to detect_lane_center()
         self.last_lane_confidence: float = 0.0
         self.last_lane_candidates: List[int] = []
+
+        # Rolling buffer for GPS direction readings; median over the last
+        # _GPS_MEDIAN_WINDOW frames reduces noise from momentary map flicker.
+        self._gps_history: Deque[int] = collections.deque(maxlen=self._GPS_MEDIAN_WINDOW)
 
         logger.info("VisionSystem initialised — monitor region: %s",
                     cfg.capture.as_dict)
@@ -161,6 +171,10 @@ class VisionSystem:
     def crop_gps(self, frame: np.ndarray) -> np.ndarray:
         """Crop the route-advisor mini-map from a full frame.
 
+        Bounds-checks all coordinates against the actual frame dimensions so a
+        misconfigured GPS region never causes an empty or out-of-range crop.
+        Falls back to the full frame when the configured region is invalid.
+
         Parameters
         ----------
         frame:
@@ -172,7 +186,22 @@ class VisionSystem:
             Cropped BGR sub-image containing the GPS mini-map.
         """
         g = self.cfg.gps
-        return frame[g.top:g.bottom, g.left:g.right]
+        h, w = frame.shape[:2]
+
+        top    = max(0, min(g.top,    h - 1))
+        bottom = max(top + 1, min(g.bottom, h))
+        left   = max(0, min(g.left,   w - 1))
+        right  = max(left + 1, min(g.right, w))
+
+        crop = frame[top:bottom, left:right]
+        if crop.size == 0:
+            logger.warning(
+                "GPS crop is empty (cfg: top=%d bottom=%d left=%d right=%d, "
+                "frame: %dx%d) — falling back to full frame.",
+                g.top, g.bottom, g.left, g.right, w, h,
+            )
+            return frame
+        return crop
 
     def gps_direction(self, gps: np.ndarray) -> int:
         """Estimate lateral steering bias from the GPS route line.
@@ -180,6 +209,9 @@ class VisionSystem:
         Detects the red route line drawn on the ETS2 mini-map and returns the
         signed offset of its centroid from the mini-map centre.  A positive
         value means the route continues to the right.
+
+        A rolling median filter over the last few frames suppresses noise from
+        momentary map redraw artefacts and produces a more reliable signal.
 
         Parameters
         ----------
@@ -208,9 +240,17 @@ class VisionSystem:
 
         ys, xs = np.where(mask > 0)
         if xs.size == 0:
+            # No route pixels visible — keep the last known reading
+            if self._gps_history:
+                return int(np.median(list(self._gps_history)))
             return 0
 
-        return int(np.mean(xs) - gps.shape[1] / 2)
+        # Use median x-position of route pixels to resist outlier noise
+        raw_offset = int(np.median(xs) - gps.shape[1] / 2)
+
+        # Append to rolling history and return the smoothed median
+        self._gps_history.append(raw_offset)
+        return int(np.median(list(self._gps_history)))
 
     def get_combined_error(self, frame: np.ndarray) -> float:
         """Blend lane-follow error with GPS guidance error.
@@ -313,4 +353,50 @@ class VisionSystem:
             vis, f"err={error:.1f}  conf={self.last_lane_confidence:.3f}",
             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2,
         )
+        return vis
+
+    def draw_gps_debug(self, gps: np.ndarray) -> np.ndarray:
+        """Overlay debug information onto the GPS mini-map crop.
+
+        Draws the detected red-route mask as a cyan tint and marks the
+        estimated route centroid with a vertical line.
+
+        Parameters
+        ----------
+        gps:
+            Cropped GPS mini-map BGR image from :meth:`crop_gps`.
+
+        Returns
+        -------
+        np.ndarray
+            Annotated BGR image (copy of *gps* with overlays).
+        """
+        if gps is None or gps.size == 0:
+            return gps
+
+        vis = gps.copy()
+        hsv = cv2.cvtColor(gps, cv2.COLOR_BGR2HSV)
+        g = self.cfg.gps
+
+        mask1 = cv2.inRange(hsv, np.array(g.lower_red1), np.array(g.upper_red1))
+        mask2 = cv2.inRange(hsv, np.array(g.lower_red2), np.array(g.upper_red2))
+        mask = cv2.bitwise_or(mask1, mask2)
+
+        # Tint detected route pixels cyan
+        vis[mask > 0] = (255, 255, 0)
+
+        # Draw centroid line and GPS offset label
+        h_gps, w_gps = vis.shape[:2]
+        _, xs = np.where(mask > 0)
+        if xs.size > 0:
+            cx = int(np.median(xs))
+            cv2.line(vis, (cx, 0), (cx, h_gps), (0, 255, 0), 1)
+            offset = cx - w_gps // 2
+            cv2.putText(
+                vis, f"gps={offset:+d}px",
+                (2, h_gps - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1,
+            )
+
+        # Centre reference line
+        cv2.line(vis, (w_gps // 2, 0), (w_gps // 2, h_gps), (255, 0, 0), 1)
         return vis
