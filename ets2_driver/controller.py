@@ -201,6 +201,11 @@ class PIDSteering:
         self._prev_error = 0.0
         self._smoothed_steer = 0.0
 
+    @property
+    def integral(self) -> float:
+        """Current integrator state (read-only, for debug/telemetry)."""
+        return self._integral
+
     def compute(self, error: float) -> float:
         """Compute the normalised steering output for the given error.
 
@@ -217,9 +222,14 @@ class PIDSteering:
         """
         pcfg = self.cfg.pid
 
-        # Deadzone — ignore tiny errors to avoid micro-jitter
-        if abs(error) < pcfg.deadzone_px:
-            error = 0.0
+        # Deadzone with linear ramp to avoid abrupt derivative spikes.
+        # Errors within the deadzone are scaled toward zero proportionally
+        # so the transition is smooth rather than a hard step.
+        abs_err = abs(error)
+        if abs_err < pcfg.deadzone_px:
+            # Scale from 0 at centre to 1 at the deadzone boundary
+            scale = abs_err / pcfg.deadzone_px
+            error = error * scale
 
         self._integral += error
         # Anti-windup

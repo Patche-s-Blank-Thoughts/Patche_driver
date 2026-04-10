@@ -264,7 +264,7 @@ class ETS2Driver:
         dbg.pid_p = self.pid.last_p
         dbg.pid_i = self.pid.last_i
         dbg.pid_d = self.pid.last_d
-        dbg.pid_integral = self.pid._integral
+        dbg.pid_integral = self.pid.integral
         dbg.raw_throttle = self.speed_ctrl.last_raw_throttle
         dbg.raw_brake = self.speed_ctrl.last_raw_brake
         dbg.in_coasting = self.speed_ctrl.in_coasting

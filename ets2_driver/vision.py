@@ -309,7 +309,6 @@ class VisionSystem:
             )
 
         # Lane confidence
-        conf_pct = int(self.last_lane_confidence * 100 * 100)  # scale to readable
         cv2.putText(
             vis, f"err={error:.1f}  conf={self.last_lane_confidence:.3f}",
             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2,
