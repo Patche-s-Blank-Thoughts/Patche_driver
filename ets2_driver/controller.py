@@ -66,14 +66,15 @@ class VJoyController:
     # ------------------------------------------------------------------
 
     def _set_axis(self, hid_usage: int, normalised: float) -> None:
-        """Write a normalised ``[-1, 1]`` or ``[0, 1]`` value to a vJoy axis.
+        """Write a normalised ``[-1, 1]`` value to a vJoy axis.
 
         Parameters
         ----------
         hid_usage:
             pyvjoy HID usage constant (X / Y / Z).
         normalised:
-            Value in ``[-1, 1]`` for steering or ``[0, 1]`` for throttle/brake.
+            Value in ``[-1, 1]``.  For ``[0, 1]`` axes (throttle/brake) use
+            the dedicated :meth:`set_throttle` / :meth:`set_brake` methods.
         """
         raw = int(normalised * _VJOY_MAX)
         raw = max(1, min(_VJOY_MAX, raw))
@@ -84,6 +85,30 @@ class VJoyController:
                 logger.error("vJoy axis write failed: %s", exc)
         else:
             logger.debug("Headless axis write: hid=%d raw=%d", hid_usage, raw)
+
+    def _set_unipolar_axis(self, hid_usage: int, value: float, axis_name: str) -> None:
+        """Write a normalised ``[0, 1]`` value to a vJoy axis.
+
+        Maps the normalised value directly to ``[0, 32767]`` with no offset.
+
+        Parameters
+        ----------
+        hid_usage:
+            pyvjoy HID usage constant (Y / Z for throttle / brake).
+        value:
+            Pre-clamped value in ``[0.0, 1.0]``.
+        axis_name:
+            Human-readable axis name used in log messages (e.g. ``"throttle"``).
+        """
+        raw = int(value * _VJOY_MAX)
+        raw = max(0, min(_VJOY_MAX, raw))
+        if self._device is not None:
+            try:
+                self._device.set_axis(hid_usage, raw)
+            except Exception as exc:
+                logger.error("vJoy %s write failed: %s", axis_name, exc)
+        else:
+            logger.debug("Headless %s: value=%.3f raw=%d", axis_name, value, raw)
 
     # ------------------------------------------------------------------
     # Public control interface
@@ -119,7 +144,7 @@ class VJoyController:
             Normalised throttle in ``[0.0, 1.0]``.
         """
         value = max(0.0, min(1.0, value))
-        self._set_axis(getattr(self, "_HID_Y", 0x31), value)
+        self._set_unipolar_axis(getattr(self, "_HID_Y", 0x31), value, "throttle")
 
     def set_brake(self, value: float) -> None:
         """Set the brake axis.
@@ -130,7 +155,7 @@ class VJoyController:
             Normalised brake pressure in ``[0.0, 1.0]``.
         """
         value = max(0.0, min(1.0, value))
-        self._set_axis(getattr(self, "_HID_Z", 0x32), value)
+        self._set_unipolar_axis(getattr(self, "_HID_Z", 0x32), value, "brake")
 
     def release_all(self) -> None:
         """Centre steering, release throttle and brake (safe-stop state)."""
