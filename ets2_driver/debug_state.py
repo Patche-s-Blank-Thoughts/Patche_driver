@@ -129,6 +129,14 @@ class FrameDebug:
     in_coasting: bool = False
     in_emergency: bool = False
 
+    # Speed tracking and adaptive PID telemetry
+    current_speed: float = 0.0       # smoothed speed in km/h
+    target_speed: Optional[float] = None  # target speed (e.g. from speed limit)
+    velocity: float = 0.0            # smoothed acceleration (km/h per frame)
+    velocity_trend: str = "steady"   # "accelerating" / "decelerating" / "steady"
+    pid_gain_scale: float = 0.5      # 0.0 = low-speed gains, 1.0 = high-speed gains
+    acceleration: float = 0.0       # alias for velocity (km/h per frame)
+
 
 class DebugState:
     """Rolling per-frame diagnostic store with a configurable history window.
@@ -207,4 +215,11 @@ class DebugState:
             "obstacle_distances": [round(d, 3) for d in f.obstacle_distances],
             "in_coasting": f.in_coasting,
             "in_emergency": f.in_emergency,
+            # Speed tracking & adaptive PID
+            "current_speed": round(f.current_speed, 1),
+            "target_speed": round(f.target_speed, 1) if f.target_speed is not None else None,
+            "velocity": round(f.velocity, 3),
+            "velocity_trend": f.velocity_trend,
+            "pid_gain_scale": round(f.pid_gain_scale, 3),
+            "acceleration": round(f.acceleration, 3),
         }
