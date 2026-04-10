@@ -61,6 +61,11 @@ class VJoyController:
                 "Running in headless mode — inputs will be logged only.",
                 device_id, exc,
             )
+            # Always initialise HID constants so headless-mode calls to
+            # set_steering / set_throttle / set_brake never raise AttributeError.
+            self._HID_X = 0x30
+            self._HID_Y = 0x31
+            self._HID_Z = 0x32
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -145,7 +150,7 @@ class VJoyController:
             Normalised throttle in ``[0.0, 1.0]``.
         """
         value = max(0.0, min(1.0, value))
-        self._set_unipolar_axis(getattr(self, "_HID_Y", 0x31), value, "throttle")
+        self._set_unipolar_axis(self._HID_Y, value, "throttle")
 
     def set_brake(self, value: float) -> None:
         """Set the brake axis.
@@ -156,7 +161,7 @@ class VJoyController:
             Normalised brake pressure in ``[0.0, 1.0]``.
         """
         value = max(0.0, min(1.0, value))
-        self._set_unipolar_axis(getattr(self, "_HID_Z", 0x32), value, "brake")
+        self._set_unipolar_axis(self._HID_Z, value, "brake")
 
     def release_all(self) -> None:
         """Centre steering, cut throttle, and apply full brake to halt the vehicle.

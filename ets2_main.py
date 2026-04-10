@@ -9,7 +9,7 @@ Quick start
 
 2. Make sure vJoy is installed and configured (see README).
 
-3. Launch ETS2 in windowed or borderless mode at 1280×720.
+3. Launch ETS2 in windowed or borderless mode at 2560×1080.
 
 4. Run the bot::
 

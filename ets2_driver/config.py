@@ -44,7 +44,15 @@ class CaptureConfig:
 
 @dataclass
 class LaneConfig:
-    """HSV thresholds and ROI for white-line lane detection."""
+    """HSV thresholds and ROI for white-line lane detection.
+
+    Notes
+    -----
+    ``roi_top_fraction`` is expressed as a fraction of the captured frame
+    height (must be in [0.0, 1.0]).  For a 2560×1080 capture the default
+    value of 0.625 crops from pixel row 675 downward, keeping the lower
+    portion of the road visible.
+    """
 
     # Fraction of frame height that forms the ROI bottom boundary (1.0 = full)
     roi_top_fraction: float = float(os.getenv("ETS2_ROI_TOP", "0.625"))
@@ -53,6 +61,17 @@ class LaneConfig:
     lower_white: Tuple[int, int, int] = (0, 0, 180)
     upper_white: Tuple[int, int, int] = (180, 60, 255)
 
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.roi_top_fraction <= 1.0):
+            raise ValueError(
+                f"roi_top_fraction (ETS2_ROI_TOP) must be in [0.0, 1.0], "
+                f"got {self.roi_top_fraction!r}"
+            )
+
+    def roi_top_px(self, frame_height: int) -> int:
+        """Return the ROI top boundary in pixels for the given frame height."""
+        return int(self.roi_top_fraction * frame_height)
+
 
 # ---------------------------------------------------------------------------
 # GPS mini-map
@@ -60,9 +79,13 @@ class LaneConfig:
 
 @dataclass
 class GpsConfig:
-    """Crop region and HSV thresholds for the route-advisor mini-map."""
+    """Crop region and HSV thresholds for the route-advisor mini-map.
 
-    # Pixel offsets from the bottom-right corner (default ETS2 2560×1080 layout)
+    Defaults are tuned for the ETS2 2560×1080 layout.  Adjust if your
+    UI scale or resolution differs.
+    """
+
+    # Pixel crop region within the captured frame (default ETS2 2560×1080 layout)
     top: int = int(os.getenv("ETS2_GPS_TOP", "0"))
     left: int = int(os.getenv("ETS2_GPS_LEFT", "0"))
     bottom: int = int(os.getenv("ETS2_GPS_BOTTOM", "1080"))
@@ -312,6 +335,7 @@ class SpeedTrackingConfig:
     enabled: bool = os.getenv("ETS2_SPD_TRACK", "false").lower() == "true"
 
     # Pixel coordinates of the speedometer crop within the captured frame
+    # (defaults calibrated for 2560×1080; scale proportionally for other resolutions)
     roi_top:    int = int(os.getenv("ETS2_SPD_ROI_TOP",    "900"))
     roi_bottom: int = int(os.getenv("ETS2_SPD_ROI_BOTTOM", "1000"))
     roi_left:   int = int(os.getenv("ETS2_SPD_ROI_LEFT",   "2200"))
