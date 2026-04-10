@@ -92,6 +92,15 @@ class TelemetryState:
         Measured loop FPS.
     timestamp:
         Unix timestamp of this state snapshot.
+    debug_summary:
+        Per-frame debug dict from :class:`~ets2_driver.debug_state.DebugState`
+        (PID internals, raw vs smoothed values, coasting/emergency flags, etc.).
+    obstacle_sides:
+        Per-obstacle zone labels (``"left"``/``"center"``/``"right"``).
+    lane_confidence:
+        Fraction of expected lane pixels found in the ROI [0, 1].
+    lane_target:
+        Which lane the bot is currently targeting.
     """
 
     frame: Optional[np.ndarray] = None
@@ -110,6 +119,10 @@ class TelemetryState:
     obstacles: List[List[float]] = field(default_factory=list)
     fps: float = 0.0
     timestamp: float = field(default_factory=time.time)
+    debug_summary: Dict[str, Any] = field(default_factory=dict)
+    obstacle_sides: List[str] = field(default_factory=list)
+    lane_confidence: float = 0.0
+    lane_target: str = "center"
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +302,11 @@ class DashboardServer:
             "timestamp": state.timestamp,
             "frame_b64": None,
             "gps_b64": None,
+            # Enhanced debug fields
+            "debug_summary": state.debug_summary,
+            "obstacle_sides": state.obstacle_sides,
+            "lane_confidence": round(state.lane_confidence, 3),
+            "lane_target": state.lane_target,
         }
 
         if state.frame is not None:

@@ -92,6 +92,18 @@ class PidConfig:
     # Maximum allowed integral accumulation (anti-windup)
     integral_max: float = float(os.getenv("ETS2_INT_MAX", "200.0"))
 
+    # Errors below this threshold (pixels) produce zero steering output
+    # (deadzone to prevent micro-corrections when nearly centred).
+    deadzone_px: float = float(os.getenv("ETS2_PID_DEADZONE", "5.0"))
+
+    # Exponential smoothing applied to the raw PID output before the rate
+    # limiter.  Range [0, 1]; higher values are smoother but more sluggish.
+    steer_smoothing: float = float(os.getenv("ETS2_STEER_SMOOTH", "0.7"))
+
+    # Maximum steering change allowed per frame (rate limiter).
+    # Prevents violent wheel snaps.  Range [0, 1].
+    max_steer_rate: float = float(os.getenv("ETS2_STEER_RATE", "0.12"))
+
 
 # ---------------------------------------------------------------------------
 # Speed control
@@ -134,6 +146,11 @@ class SpeedConfig:
     # Brake pressure applied during emergency braking
     emergency_brake_value: float = float(os.getenv("ETS2_EMRG_BRK", "0.95"))
 
+    # Coasting: reduce throttle gently when steering error is in this range
+    # (between straight cruising and a full turn) to smooth the approach.
+    coasting_threshold: int = int(os.getenv("ETS2_COAST_THR", "60"))
+    coasting_throttle: float = float(os.getenv("ETS2_COAST_VAL", "0.55"))
+
 
 # ---------------------------------------------------------------------------
 # Obstacle / YOLO detection
@@ -161,6 +178,11 @@ class DetectionConfig:
 
     # Run YOLO every N vision frames to reduce CPU/GPU load
     inference_every_n_frames: int = int(os.getenv("ETS2_YOLO_SKIP", "2"))
+
+    # Width of the "centre zone" as a fraction of the frame width.
+    # Obstacles whose horizontal centre falls within ±(fraction/2) of the
+    # screen centre are considered directly ahead.
+    center_zone_fraction: float = float(os.getenv("ETS2_CENTER_ZONE", "0.33"))
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ without a live game window.
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import mss
@@ -31,6 +31,11 @@ class VisionSystem:
     def __init__(self, cfg: ETS2Config) -> None:
         self.cfg = cfg
         self._sct = mss.mss()
+
+        # Debug / telemetry — set on each call to detect_lane_center()
+        self.last_lane_confidence: float = 0.0
+        self.last_lane_candidates: List[int] = []
+
         logger.info("VisionSystem initialised — monitor region: %s",
                     cfg.capture.as_dict)
 
@@ -54,6 +59,31 @@ class VisionSystem:
     # Lane / road detection
     # ------------------------------------------------------------------
 
+    def _lane_mask(self, frame: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Return the white-pixel mask and the ROI slice.
+
+        Parameters
+        ----------
+        frame:
+            Full BGR frame.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            ``(roi_mask, full_mask)`` — both are binary masks with the same
+            spatial extent as *frame*.  ``roi_mask`` has pixels outside the
+            region-of-interest zeroed out.
+        """
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        lower = np.array(self.cfg.lane.lower_white)
+        upper = np.array(self.cfg.lane.upper_white)
+        full_mask = cv2.inRange(hsv, lower, upper)
+
+        roi_top = int(frame.shape[0] * self.cfg.lane.roi_top_fraction)
+        roi_mask = np.zeros_like(full_mask)
+        roi_mask[roi_top:, :] = full_mask[roi_top:, :]
+        return roi_mask, full_mask
+
     def detect_lane_center(self, frame: np.ndarray) -> int:
         """Return the horizontal pixel position of the detected lane centre.
 
@@ -62,6 +92,12 @@ class VisionSystem:
         Region Of Interest), and returns the mean column index of matching
         pixels.  Falls back to the frame centre when no lane markings are
         visible.
+
+        As a side-effect this method updates:
+        * :attr:`last_lane_confidence` — fraction of ROI pixels that are lane
+          markings (higher is more reliable).
+        * :attr:`last_lane_candidates` — up to three candidate centres
+          (left-third, centre-third, right-third of the ROI).
 
         Parameters
         ----------
@@ -73,16 +109,25 @@ class VisionSystem:
         int
             Horizontal pixel index of the estimated lane centre.
         """
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        lower = np.array(self.cfg.lane.lower_white)
-        upper = np.array(self.cfg.lane.upper_white)
-        mask = cv2.inRange(hsv, lower, upper)
-
-        # Region-of-interest: lower portion of the frame
+        roi_mask, _ = self._lane_mask(frame)
         roi_top = int(frame.shape[0] * self.cfg.lane.roi_top_fraction)
-        roi = mask[roi_top:, :]
+        roi = roi_mask[roi_top:, :]
 
         ys, xs = np.where(roi > 0)
+
+        # Confidence: fraction of ROI pixels that matched
+        roi_pixels = roi.size
+        self.last_lane_confidence = float(xs.size / max(1, roi_pixels))
+
+        # Candidate centres split into left / centre / right thirds
+        w = roi.shape[1]
+        candidates: List[int] = []
+        for lo, hi in [(0, w // 3), (w // 3, 2 * w // 3), (2 * w // 3, w)]:
+            segment_xs = xs[(xs >= lo) & (xs < hi)]
+            if segment_xs.size > 0:
+                candidates.append(int(np.mean(segment_xs)))
+        self.last_lane_candidates = candidates
+
         if xs.size == 0:
             logger.debug("No lane pixels found — using frame centre")
             return frame.shape[1] // 2
@@ -201,6 +246,8 @@ class VisionSystem:
         lane_center: int,
         error: float,
         obstacles: list,
+        lane_candidates: Optional[List[int]] = None,
+        obstacle_sides: Optional[List[str]] = None,
     ) -> np.ndarray:
         """Overlay debug information onto a frame for live monitoring.
 
@@ -214,6 +261,12 @@ class VisionSystem:
             Current composite steering error.
         obstacles:
             List of ``[x1, y1, x2, y2]`` bounding boxes from the detector.
+        lane_candidates:
+            Optional list of candidate lane-centre x positions (drawn as
+            thin vertical lines).
+        obstacle_sides:
+            Optional per-obstacle side labels (``"left"``/``"center"``/
+            ``"right"``).  When provided, each box is labelled with its zone.
 
         Returns
         -------
@@ -224,20 +277,41 @@ class VisionSystem:
         h, w = vis.shape[:2]
         screen_cx = w // 2
 
+        # Lane-boundary safe zone (±50 px from screen centre)
+        safe_left = screen_cx - 50
+        safe_right = screen_cx + 50
+        cv2.line(vis, (safe_left, h // 2), (safe_left, h), (0, 200, 100), 1)
+        cv2.line(vis, (safe_right, h // 2), (safe_right, h), (0, 200, 100), 1)
+
+        # Candidate lane centres (thin cyan lines)
+        if lane_candidates:
+            for cx in lane_candidates:
+                cv2.line(vis, (cx, h // 2), (cx, h), (255, 200, 0), 1)
+
         # Lane-centre vertical line
         cv2.line(vis, (lane_center, h // 2), (lane_center, h),
                  (0, 255, 0), 2)
         # Screen-centre reference
         cv2.line(vis, (screen_cx, 0), (screen_cx, h), (255, 0, 0), 1)
 
-        # Obstacle bounding boxes
-        for box in obstacles:
+        # Obstacle bounding boxes with side labels
+        side_colors = {"left": (0, 165, 255), "center": (0, 0, 255), "right": (255, 0, 255)}
+        for i, box in enumerate(obstacles):
             x1, y1, x2, y2 = (int(v) for v in box)
-            cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            side = obstacle_sides[i] if obstacle_sides and i < len(obstacle_sides) else "center"
+            color = side_colors.get(side, (0, 0, 255))
+            cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
+            # Side label above the box
+            cv2.putText(
+                vis, side.upper(),
+                (x1, max(0, y1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1,
+            )
 
-        # Error text
+        # Lane confidence
+        conf_pct = int(self.last_lane_confidence * 100 * 100)  # scale to readable
         cv2.putText(
-            vis, f"err={error:.1f}",
-            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2
+            vis, f"err={error:.1f}  conf={self.last_lane_confidence:.3f}",
+            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2,
         )
         return vis

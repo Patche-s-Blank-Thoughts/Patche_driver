@@ -178,17 +178,28 @@ class PIDSteering:
     Integral windup is clamped by
     :attr:`~ets2_driver.config.PidConfig.integral_max`.
     The derivative term uses a simple finite difference on the error signal.
+    A configurable deadzone suppresses micro-corrections when the error is
+    small.  Exponential output smoothing and a per-frame rate limiter prevent
+    violent steering snaps.
     """
 
     def __init__(self, cfg: ETS2Config) -> None:
         self.cfg = cfg
         self._integral: float = 0.0
         self._prev_error: float = 0.0
+        self._smoothed_steer: float = 0.0
+
+        # Debug / telemetry — readable after each call to compute()
+        self.last_p: float = 0.0
+        self.last_i: float = 0.0
+        self.last_d: float = 0.0
+        self.last_raw: float = 0.0
 
     def reset(self) -> None:
         """Reset integrator and derivative memory."""
         self._integral = 0.0
         self._prev_error = 0.0
+        self._smoothed_steer = 0.0
 
     def compute(self, error: float) -> float:
         """Compute the normalised steering output for the given error.
@@ -201,9 +212,14 @@ class PIDSteering:
         Returns
         -------
         float
-            Normalised steering value in ``[-1.0, 1.0]``.
+            Normalised steering value in ``[-1.0, 1.0]`` after smoothing and
+            rate-limiting.
         """
         pcfg = self.cfg.pid
+
+        # Deadzone — ignore tiny errors to avoid micro-jitter
+        if abs(error) < pcfg.deadzone_px:
+            error = 0.0
 
         self._integral += error
         # Anti-windup
@@ -214,12 +230,29 @@ class PIDSteering:
         derivative = error - self._prev_error
         self._prev_error = error
 
-        steer = (
-            pcfg.kp * error
-            + pcfg.ki * self._integral
-            + pcfg.kd * derivative
-        )
-        return max(-1.0, min(1.0, steer))
+        p_term = pcfg.kp * error
+        i_term = pcfg.ki * self._integral
+        d_term = pcfg.kd * derivative
+
+        # Store debug terms
+        self.last_p = p_term
+        self.last_i = i_term
+        self.last_d = d_term
+
+        raw = p_term + i_term + d_term
+        raw = max(-1.0, min(1.0, raw))
+        self.last_raw = raw
+
+        # Exponential smoothing on the raw output
+        alpha = pcfg.steer_smoothing
+        smoothed = alpha * self._smoothed_steer + (1.0 - alpha) * raw
+
+        # Rate limiting — cap how much the steering can change in one frame
+        delta = smoothed - self._smoothed_steer
+        delta = max(-pcfg.max_steer_rate, min(pcfg.max_steer_rate, delta))
+        self._smoothed_steer += delta
+
+        return max(-1.0, min(1.0, self._smoothed_steer))
 
 
 class SpeedController:
@@ -227,7 +260,8 @@ class SpeedController:
 
     Improves on the previous binary on/off logic with exponential smoothing,
     acceleration/deceleration ramping, adaptive speed scaling based on steering
-    intensity, and emergency braking for extreme steering errors.
+    intensity, a coasting mode for gentle curve approach, and emergency braking
+    for extreme steering errors.
 
     Parameters
     ----------
@@ -240,11 +274,19 @@ class SpeedController:
         self._smoothed_throttle: float = 0.0
         self._smoothed_brake: float = 0.0
 
+        # Debug / telemetry — readable after each call to compute()
+        self.last_raw_throttle: float = 0.0
+        self.last_raw_brake: float = 0.0
+        self.in_coasting: bool = False
+        self.in_emergency: bool = False
+
     def compute(self, steering_error: float) -> tuple[float, float]:
         """Return ``(throttle, brake)`` based on the current steering error.
 
         Applies exponential smoothing and ramp-rate limiting to prevent sudden
         input changes, and triggers emergency braking when the error is extreme.
+        A coasting mode gently reduces throttle when the steering error is
+        approaching a turn threshold, smoothing the speed transition.
 
         Parameters
         ----------
@@ -259,9 +301,13 @@ class SpeedController:
         scfg = self.cfg.speed
         abs_error = abs(steering_error)
 
+        self.in_coasting = False
+        self.in_emergency = False
+
         # --- Determine raw target values ---
         if abs_error > scfg.emergency_brake_threshold:
             # Emergency braking: hard stop, no throttle
+            self.in_emergency = True
             target_throttle = 0.0
             target_brake = scfg.emergency_brake_value
         elif abs_error > scfg.turn_error_threshold:
@@ -278,9 +324,18 @@ class SpeedController:
             # decreases even if emergency_brake_value < turn_brake.
             max_brake = max(scfg.turn_brake, scfg.emergency_brake_value)
             target_brake = scfg.turn_brake + severity * (max_brake - scfg.turn_brake)
+        elif abs_error > scfg.coasting_threshold:
+            # Coasting zone: gently reduce throttle before entering a turn
+            self.in_coasting = True
+            target_throttle = scfg.coasting_throttle
+            target_brake = 0.0
         else:
             target_throttle = scfg.cruise_throttle
             target_brake = 0.0
+
+        # Store raw targets for debug
+        self.last_raw_throttle = target_throttle
+        self.last_raw_brake = target_brake
 
         # --- Ramp-rate limiting (cap per-frame change) ---
         throttle_delta = target_throttle - self._smoothed_throttle

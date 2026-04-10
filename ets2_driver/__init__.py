@@ -10,10 +10,12 @@ controller  vJoy axis control (steering, throttle, brake).
 gears       Automatic gear-shifting via keyboard automation.
 llm_planner Optional LLM high-level planner (1-2 Hz).
 dashboard   Real-time Flask + Socket.IO web monitoring dashboard.
+debug_state Per-frame diagnostic state with rolling 60-frame history.
 driver      Top-level ETS2Driver class that wires all modules together.
 """
 
 from .dashboard import DashboardServer, TelemetryState
+from .debug_state import DebugState, FrameDebug
 from .driver import ETS2Driver
 from .speed_limit import SpeedLimitDetector, SpeedLimitResult
 
@@ -23,4 +25,6 @@ __all__ = [
     "SpeedLimitResult",
     "DashboardServer",
     "TelemetryState",
+    "DebugState",
+    "FrameDebug",
 ]
