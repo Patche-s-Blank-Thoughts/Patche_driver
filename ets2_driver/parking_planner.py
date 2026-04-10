@@ -24,7 +24,10 @@ import asyncio
 import logging
 import re
 import time
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from .gears import GearShifter
 
 import cv2
 import numpy as np
@@ -125,13 +128,24 @@ class ParkingLotPlanner:
     # painted lane lines.
     _ROAD_DENSITY_THRESHOLD: float = 0.012
 
-    def __init__(self, cfg: ETS2Config) -> None:
+    # Stuck detection: if speed stays below this for _STUCK_FRAMES_THRESHOLD
+    # consecutive frames while executing a forward-type action, the planner
+    # inserts a REVERSE escape sequence to clear the obstacle.
+    _STUCK_SPEED_THRESHOLD_KPH: float = 1.0
+    _STUCK_FRAMES_THRESHOLD: int = 30        # ≈ 1 s at 30 fps
+    _STUCK_INSERT_COOLDOWN_S: float = 8.0   # minimum gap between insertions
+
+    def __init__(self, cfg: ETS2Config, gear_shifter: "Optional[GearShifter]" = None) -> None:
         self.cfg = cfg
+        self._gear_shifter = gear_shifter
         self._state: str = ParkingState.UNKNOWN
         self._last_check: float = 0.0
         self._nav_plan: List[NavigationStep] = []
         self._current_step_idx: int = 0
         self._agent = None
+        self._reverse_engaged: bool = False
+        self._stuck_frames: int = 0
+        self._last_stuck_insert: float = 0.0
 
         logger.info("ParkingLotPlanner initialised.")
 
@@ -286,14 +300,13 @@ class ParkingLotPlanner:
     # Action → controls mapping
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _action_to_controls(action: str) -> Tuple[float, float, float]:
+    def _action_to_controls(self, action: str) -> Tuple[float, float, float]:
         """Convert a navigation action token to ``(steer, throttle, brake)``."""
         mapping = {
             "FORWARD":     (0.0,  0.4, 0.0),
             "TURN_LEFT":   (-0.5, 0.3, 0.0),
             "TURN_RIGHT":  (0.5,  0.3, 0.0),
-            "REVERSE":     (0.0,  0.0, 0.3),  # brake to slow; manual reverse via gears
+            "REVERSE":     (0.0,  0.3, 0.0),  # throttle in reverse gear
             "STOP":        (0.0,  0.0, 0.8),
         }
         return mapping.get(action, (0.0, 0.0, 0.0))
@@ -320,8 +333,9 @@ class ParkingLotPlanner:
         gps_error:
             GPS lateral offset in pixels (from :class:`VisionSystem`).
         speed_kph:
-            Current vehicle speed in km/h (unused currently, reserved for
-            future speed-aware manoeuvre scaling).
+            Current vehicle speed in km/h.  Used for stuck detection: if the
+            truck stays at near-zero speed while executing a forward action,
+            the planner inserts a reverse escape sequence.
 
         Returns
         -------
@@ -378,6 +392,17 @@ class ParkingLotPlanner:
         step = self._nav_plan[self._current_step_idx]
         if step._start_time is None:
             step.start()
+            # Handle gear transitions when starting a new step.
+            if step.action == "REVERSE":
+                if self._gear_shifter is not None:
+                    self._gear_shifter.reverse()
+                self._reverse_engaged = True
+                self._stuck_frames = 0
+            elif self._reverse_engaged:
+                # Returning to forward travel — shift out of reverse gear.
+                if self._gear_shifter is not None:
+                    self._gear_shifter.gear_up()
+                self._reverse_engaged = False
             logger.info(
                 "ParkingLotPlanner: step %d/%d — %s (%.1fs) %s",
                 self._current_step_idx + 1,
@@ -386,6 +411,42 @@ class ParkingLotPlanner:
                 step.duration_s,
                 step.description,
             )
+
+        # Stuck detection: accumulate while a forward-type action is executing
+        # at near-zero speed, then dynamically insert a reverse escape sequence.
+        if step.action in ("FORWARD", "TURN_LEFT", "TURN_RIGHT"):
+            if speed_kph < self._STUCK_SPEED_THRESHOLD_KPH:
+                self._stuck_frames += 1
+            else:
+                self._stuck_frames = 0
+
+            if (
+                self._stuck_frames >= self._STUCK_FRAMES_THRESHOLD
+                and now - self._last_stuck_insert >= self._STUCK_INSERT_COOLDOWN_S
+            ):
+                logger.warning(
+                    "ParkingLotPlanner: stuck (speed=%.1f kph, %d frames) — "
+                    "inserting reverse sequence at step %d.",
+                    speed_kph,
+                    self._stuck_frames,
+                    self._current_step_idx,
+                )
+                self._stuck_frames = 0
+                self._last_stuck_insert = now
+                # Reset the current step so it restarts cleanly after reversing.
+                step._start_time = None
+                reverse_steps = [
+                    NavigationStep("REVERSE", 3.0, "Escape obstacle — reversing"),
+                    NavigationStep("STOP", 0.5, "Stop before reattempting forward"),
+                ]
+                self._nav_plan = (
+                    self._nav_plan[: self._current_step_idx]
+                    + reverse_steps
+                    + self._nav_plan[self._current_step_idx :]
+                )
+                return (0.0, 0.0, 0.3)  # brief brake while gear engages
+        else:
+            self._stuck_frames = 0
 
         if step.is_complete:
             self._current_step_idx += 1
