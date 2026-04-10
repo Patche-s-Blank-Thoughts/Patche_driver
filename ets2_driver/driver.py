@@ -346,12 +346,12 @@ class ETS2Driver:
         # stationary) and is needed for stuck detection.  When speed tracking is
         # disabled the speed is always 0.0 by default and cannot be trusted, so
         # pass None to skip all shifting and stuck-detection logic.
-        _speed_for_gears = (
+        speed_for_gears = (
             current_speed
             if (current_speed > 0.0 or self.cfg.speed_tracking.enabled)
             else None
         )
-        self.gears.update(estimated_speed=_speed_for_gears, throttle=throttle, brake=brake)
+        self.gears.update(estimated_speed=speed_for_gears, throttle=throttle, brake=brake)
 
         # 9. Build reasoning log for the dashboard
         decision_reasons = self._build_decision_reasons(

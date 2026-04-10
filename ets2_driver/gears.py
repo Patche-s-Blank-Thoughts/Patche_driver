@@ -130,9 +130,9 @@ class GearShifter:
         total_cooldown = gcfg.reverse_hold_duration_s + gcfg.stuck_detection_cooldown_s
         if now - self._last_reverse_time >= total_cooldown:
             if (
-                estimated_speed < 1.0
+                estimated_speed < gcfg.stuck_speed_threshold_kph
                 and throttle > gcfg.stuck_throttle_threshold
-                and brake < 0.1
+                and brake < gcfg.stuck_brake_threshold
             ):
                 self._stuck_counter += 1
                 if self._stuck_counter >= gcfg.stuck_frames_before_reverse:

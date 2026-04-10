@@ -298,6 +298,12 @@ class GearConfig:
     # Minimum throttle level [0, 1] to consider the truck as attempting to move
     stuck_throttle_threshold: float = float(os.getenv("ETS2_STUCK_THR", "0.3"))
 
+    # Maximum speed (km/h) below which the truck is considered stationary
+    stuck_speed_threshold_kph: float = float(os.getenv("ETS2_STUCK_SPD", "1.0"))
+
+    # Brake command level above which stuck detection is suppressed
+    stuck_brake_threshold: float = float(os.getenv("ETS2_STUCK_BRK", "0.1"))
+
     # Consecutive frames with stuck condition before engaging reverse
     stuck_frames_before_reverse: int = int(os.getenv("ETS2_STUCK_FRAMES", "30"))
 
