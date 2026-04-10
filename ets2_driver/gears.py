@@ -126,7 +126,11 @@ class GearShifter:
         gcfg = self.cfg.gear
 
         # --- Stuck / reverse detection ---
-        # Only active outside the post-reverse cooldown window.
+        # Cooldown combines reverse_hold_duration_s (time the truck is expected
+        # to be in reverse and moving) and stuck_detection_cooldown_s (settle
+        # time after reverse to avoid re-triggering immediately after the truck
+        # exits the stuck condition).  They are summed into a single elapsed
+        # check to keep the logic simple and avoid interleaving state machines.
         total_cooldown = gcfg.reverse_hold_duration_s + gcfg.stuck_detection_cooldown_s
         if now - self._last_reverse_time >= total_cooldown:
             if (
@@ -155,6 +159,8 @@ class GearShifter:
         if estimated_speed > gcfg.gear_up_speed:
             self.gear_up()
             self._last_shift = now
-        elif 0.0 < estimated_speed < gcfg.gear_down_speed:
+        elif gcfg.stuck_speed_threshold_kph <= estimated_speed < gcfg.gear_down_speed:
+            # Only downshift when speed is above the stuck threshold; avoid
+            # conflating a stationary truck with one that needs a lower gear.
             self.gear_down()
             self._last_shift = now
