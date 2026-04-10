@@ -341,8 +341,17 @@ class ETS2Driver:
         self.vjoy.set_throttle(throttle)
         self.vjoy.set_brake(brake)
 
-        # 8. Gear shifting — pass OCR speed if available
-        self.gears.update(estimated_speed=current_speed if current_speed > 0.0 else None)
+        # 8. Gear shifting — pass OCR speed and current throttle/brake.
+        # When speed tracking is enabled, 0.0 is a valid reading (truck confirmed
+        # stationary) and is needed for stuck detection.  When speed tracking is
+        # disabled the speed is always 0.0 by default and cannot be trusted, so
+        # pass None to skip all shifting and stuck-detection logic.
+        _speed_for_gears = (
+            current_speed
+            if (current_speed > 0.0 or self.cfg.speed_tracking.enabled)
+            else None
+        )
+        self.gears.update(estimated_speed=_speed_for_gears, throttle=throttle, brake=brake)
 
         # 9. Build reasoning log for the dashboard
         decision_reasons = self._build_decision_reasons(

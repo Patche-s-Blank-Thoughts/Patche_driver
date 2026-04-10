@@ -294,6 +294,19 @@ class GearConfig:
     # Set True if you have automatic transmission enabled in ETS2 settings
     auto_transmission: bool = os.getenv("ETS2_AUTO_TRANS", "true").lower() == "true"
 
+    # --- Stuck / reverse detection ---
+    # Minimum throttle level [0, 1] to consider the truck as attempting to move
+    stuck_throttle_threshold: float = float(os.getenv("ETS2_STUCK_THR", "0.3"))
+
+    # Consecutive frames with stuck condition before engaging reverse
+    stuck_frames_before_reverse: int = int(os.getenv("ETS2_STUCK_FRAMES", "30"))
+
+    # Seconds after engaging reverse before stuck detection may re-trigger
+    reverse_hold_duration_s: float = float(os.getenv("ETS2_REV_HOLD", "2.0"))
+
+    # Additional cooldown (seconds) after the reverse hold before checking again
+    stuck_detection_cooldown_s: float = float(os.getenv("ETS2_STUCK_COOL", "5.0"))
+
 
 # ---------------------------------------------------------------------------
 # LLM planner
