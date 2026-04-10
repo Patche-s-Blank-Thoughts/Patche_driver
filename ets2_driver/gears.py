@@ -44,17 +44,19 @@ class GearShifter:
         self._last_shift: float = 0.0
         self._keyboard_available: bool = False
 
-        if cfg.gear.auto_transmission:
-            logger.info("GearShifter: ETS2 automatic transmission enabled — "
-                        "keyboard shifting is disabled.")
-            return
-
         try:
             import keyboard  # type: ignore  # noqa: F401
             self._keyboard_available = True
-            logger.info("GearShifter ready (up=%s, down=%s, reverse=%s).",
-                        cfg.gear.gear_up_key, cfg.gear.gear_down_key,
-                        cfg.gear.reverse_key)
+            if cfg.gear.auto_transmission:
+                logger.info(
+                    "GearShifter: ETS2 automatic transmission enabled — "
+                    "auto-shifting disabled (reverse key still active: %s).",
+                    cfg.gear.reverse_key,
+                )
+            else:
+                logger.info("GearShifter ready (up=%s, down=%s, reverse=%s).",
+                            cfg.gear.gear_up_key, cfg.gear.gear_down_key,
+                            cfg.gear.reverse_key)
         except Exception as exc:
             logger.warning("keyboard module not available (%s). "
                            "Gear shifting disabled.", exc)

@@ -89,7 +89,7 @@ class ETS2Driver:
         self.dashboard = DashboardServer(self.cfg)
         self.debug_state = DebugState()
         self.camera = CameraManager(self.cfg)
-        self.parking_planner = ParkingLotPlanner(self.cfg)
+        self.parking_planner = ParkingLotPlanner(self.cfg, gear_shifter=self.gears)
 
         # Rolling FPS measurement — keep the last 60 tick timestamps so that
         # the displayed FPS updates every frame rather than every 5 seconds.
@@ -156,8 +156,9 @@ class ETS2Driver:
         IDE).
         """
         try:
-            self.vjoy.set_throttle(0.0)
-            self.vjoy.set_brake(1.0)
+            for _ in range(3):
+                self.vjoy.set_throttle(0.0)
+                self.vjoy.set_brake(1.0)
         except Exception:
             pass  # Best-effort — do not raise during interpreter shutdown
 
