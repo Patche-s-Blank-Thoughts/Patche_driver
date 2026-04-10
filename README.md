@@ -34,7 +34,7 @@ web-based monitoring dashboard.
 
 2. **Configure vJoy** (Windows) — install and configure a vJoy virtual joystick device.
 
-3. **Launch ETS2** in windowed or borderless mode at **1280 × 720**.
+3. **Launch ETS2** in windowed or borderless mode at **2560 × 1080**.
 
 4. **Run the bot**
 

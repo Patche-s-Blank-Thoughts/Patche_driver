@@ -29,8 +29,8 @@ class CaptureConfig:
 
     top: int = int(os.getenv("ETS2_CAP_TOP", "0"))
     left: int = int(os.getenv("ETS2_CAP_LEFT", "0"))
-    width: int = int(os.getenv("ETS2_CAP_WIDTH", "1280"))
-    height: int = int(os.getenv("ETS2_CAP_HEIGHT", "720"))
+    width: int = int(os.getenv("ETS2_CAP_WIDTH", "2560"))
+    height: int = int(os.getenv("ETS2_CAP_HEIGHT", "1080"))
 
     @property
     def as_dict(self) -> Dict[str, int]:
@@ -49,8 +49,8 @@ class LaneConfig:
     Notes
     -----
     ``roi_top_fraction`` is expressed as a fraction of the captured frame
-    height (must be in [0.0, 1.0]).  For a 1280×720 capture the default
-    value of 0.625 crops from pixel row 450 downward, keeping the lower
+    height (must be in [0.0, 1.0]).  For a 2560×1080 capture the default
+    value of 0.625 crops from pixel row 675 downward, keeping the lower
     portion of the road visible.
     """
 
@@ -81,15 +81,15 @@ class LaneConfig:
 class GpsConfig:
     """Crop region and HSV thresholds for the route-advisor mini-map.
 
-    Defaults are tuned for the ETS2 1280×720 layout.  Adjust if your
+    Defaults are tuned for the ETS2 2560×1080 layout.  Adjust if your
     UI scale or resolution differs.
     """
 
-    # Pixel crop region within the captured frame (default ETS2 1280×720 layout)
+    # Pixel crop region within the captured frame (default ETS2 2560×1080 layout)
     top: int = int(os.getenv("ETS2_GPS_TOP", "0"))
     left: int = int(os.getenv("ETS2_GPS_LEFT", "0"))
-    bottom: int = int(os.getenv("ETS2_GPS_BOTTOM", "720"))
-    right: int = int(os.getenv("ETS2_GPS_RIGHT", "1280"))
+    bottom: int = int(os.getenv("ETS2_GPS_BOTTOM", "1080"))
+    right: int = int(os.getenv("ETS2_GPS_RIGHT", "2560"))
     # HSV bounds for the red route line drawn on the mini-map
     lower_red1: Tuple[int, int, int] = (0, 120, 100)
     upper_red1: Tuple[int, int, int] = (10, 255, 255)
@@ -324,7 +324,7 @@ class SpeedTrackingConfig:
     """Configuration for HUD OCR-based speed capture and velocity estimation.
 
     The OCR region should cover the in-game speedometer display (the large
-    km/h number on the HUD).  Defaults are tuned for the ETS2 1280×720
+    km/h number on the HUD).  Defaults are tuned for the ETS2 2560×1080
     layout with the speedometer in the bottom-right corner.
 
     Set ``ETS2_SPD_TRACK=true`` to enable (disabled by default to avoid
@@ -335,11 +335,11 @@ class SpeedTrackingConfig:
     enabled: bool = os.getenv("ETS2_SPD_TRACK", "false").lower() == "true"
 
     # Pixel coordinates of the speedometer crop within the captured frame
-    # (defaults calibrated for 1280×720; scale proportionally for other resolutions)
-    roi_top:    int = int(os.getenv("ETS2_SPD_ROI_TOP",    "600"))
-    roi_bottom: int = int(os.getenv("ETS2_SPD_ROI_BOTTOM", "667"))
-    roi_left:   int = int(os.getenv("ETS2_SPD_ROI_LEFT",   "1100"))
-    roi_right:  int = int(os.getenv("ETS2_SPD_ROI_RIGHT",  "1280"))
+    # (defaults calibrated for 2560×1080; scale proportionally for other resolutions)
+    roi_top:    int = int(os.getenv("ETS2_SPD_ROI_TOP",    "900"))
+    roi_bottom: int = int(os.getenv("ETS2_SPD_ROI_BOTTOM", "1000"))
+    roi_left:   int = int(os.getenv("ETS2_SPD_ROI_LEFT",   "2200"))
+    roi_right:  int = int(os.getenv("ETS2_SPD_ROI_RIGHT",  "2560"))
 
     # Exponential smoothing weight applied to new OCR readings.
     # Range [0, 1]; higher = more smoothing (slower to respond to changes).
