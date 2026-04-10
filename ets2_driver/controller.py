@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from .adaptive_pid import AdaptivePIDGains
 from .config import ETS2Config
 
 logger = logging.getLogger(__name__)
@@ -189,11 +190,15 @@ class PIDSteering:
         self._prev_error: float = 0.0
         self._smoothed_steer: float = 0.0
 
+        # Adaptive gain scheduler (uses speed to interpolate PID coefficients)
+        self._gain_scheduler: AdaptivePIDGains = AdaptivePIDGains(cfg)
+
         # Debug / telemetry — readable after each call to compute()
         self.last_p: float = 0.0
         self.last_i: float = 0.0
         self.last_d: float = 0.0
         self.last_raw: float = 0.0
+        self.last_gain_scale: float = 0.5  # 0.0=low-speed, 1.0=high-speed curve
 
     def reset(self) -> None:
         """Reset integrator and derivative memory."""
@@ -206,13 +211,16 @@ class PIDSteering:
         """Current integrator state (read-only, for debug/telemetry)."""
         return self._integral
 
-    def compute(self, error: float) -> float:
+    def compute(self, error: float, speed_kph: float = 0.0) -> float:
         """Compute the normalised steering output for the given error.
 
         Parameters
         ----------
         error:
             Current signed pixel offset from lane centre (positive = steer right).
+        speed_kph:
+            Current vehicle speed in km/h, used to look up the adaptive gain
+            schedule.  Pass ``0.0`` (default) to use the static PID config.
 
         Returns
         -------
@@ -221,6 +229,10 @@ class PIDSteering:
             rate-limiting.
         """
         pcfg = self.cfg.pid
+
+        # Resolve gains — adaptive scheduler overrides static config when enabled
+        kp, ki, kd, integral_max, gain_scale = self._gain_scheduler.get_gains(speed_kph)
+        self.last_gain_scale = gain_scale
 
         # Deadzone with linear ramp to avoid abrupt derivative spikes.
         # Errors within the deadzone are scaled toward zero proportionally
@@ -232,17 +244,17 @@ class PIDSteering:
             error = error * scale
 
         self._integral += error
-        # Anti-windup
+        # Anti-windup using speed-adjusted integral clamp
         self._integral = max(
-            -pcfg.integral_max, min(pcfg.integral_max, self._integral)
+            -integral_max, min(integral_max, self._integral)
         )
 
         derivative = error - self._prev_error
         self._prev_error = error
 
-        p_term = pcfg.kp * error
-        i_term = pcfg.ki * self._integral
-        d_term = pcfg.kd * derivative
+        p_term = kp * error
+        i_term = ki * self._integral
+        d_term = kd * derivative
 
         # Store debug terms
         self.last_p = p_term
@@ -290,7 +302,7 @@ class SpeedController:
         self.in_coasting: bool = False
         self.in_emergency: bool = False
 
-    def compute(self, steering_error: float) -> tuple[float, float]:
+    def compute(self, steering_error: float, speed_kph: float = 0.0) -> tuple[float, float]:
         """Return ``(throttle, brake)`` based on the current steering error.
 
         Applies exponential smoothing and ramp-rate limiting to prevent sudden
@@ -298,10 +310,17 @@ class SpeedController:
         A coasting mode gently reduces throttle when the steering error is
         approaching a turn threshold, smoothing the speed transition.
 
+        At higher speeds the coasting zone is triggered earlier (lower steering
+        error threshold), acceleration ramps faster, and the throttle is reduced
+        before the brake is applied to simulate engine braking.
+
         Parameters
         ----------
         steering_error:
             Absolute steering error in pixels.
+        speed_kph:
+            Current vehicle speed in km/h.  Used to scale the coasting
+            threshold and ramp rate dynamically.
 
         Returns
         -------
@@ -313,6 +332,21 @@ class SpeedController:
 
         self.in_coasting = False
         self.in_emergency = False
+
+        # Speed-aware coasting threshold: trigger coasting earlier at high speed
+        # so the truck starts slowing down sooner before a curve.
+        # Factor scales from 1.0 at 0 km/h down to 0.5 at 200 km/h.
+        coast_factor = max(0.5, 1.0 - speed_kph / 200.0)
+        effective_coast_threshold = scfg.coasting_threshold * coast_factor
+
+        # Speed-aware ramp rate: allow faster throttle build-up at higher speed
+        # so the truck accelerates smoothly back up after a curve.
+        # Factor scales from 1.0 at 0 km/h up to 2.0 at 100 km/h, then clamped.
+        ramp_factor = min(2.0, 1.0 + speed_kph / 100.0)
+        effective_ramp = min(
+            scfg.speed_ramp_rate * ramp_factor,
+            scfg.speed_ramp_rate * 2.0,
+        )
 
         # --- Determine raw target values ---
         if abs_error > scfg.emergency_brake_threshold:
@@ -334,7 +368,7 @@ class SpeedController:
             # decreases even if emergency_brake_value < turn_brake.
             max_brake = max(scfg.turn_brake, scfg.emergency_brake_value)
             target_brake = scfg.turn_brake + severity * (max_brake - scfg.turn_brake)
-        elif abs_error > scfg.coasting_threshold:
+        elif abs_error > effective_coast_threshold:
             # Coasting zone: gently reduce throttle before entering a turn
             self.in_coasting = True
             target_throttle = scfg.coasting_throttle
@@ -343,13 +377,19 @@ class SpeedController:
             target_throttle = scfg.cruise_throttle
             target_brake = 0.0
 
+        # Engine braking simulation: when brake target > 0 and we are still
+        # carrying significant throttle, first shed throttle before braking.
+        # This produces a smoother deceleration feel at higher speeds.
+        if target_brake > 0.0 and self._smoothed_throttle > 0.1:
+            target_throttle = 0.0
+
         # Store raw targets for debug
         self.last_raw_throttle = target_throttle
         self.last_raw_brake = target_brake
 
         # --- Ramp-rate limiting (cap per-frame change) ---
         throttle_delta = target_throttle - self._smoothed_throttle
-        throttle_delta = max(-scfg.speed_ramp_rate, min(scfg.speed_ramp_rate, throttle_delta))
+        throttle_delta = max(-effective_ramp, min(effective_ramp, throttle_delta))
         ramped_throttle = self._smoothed_throttle + throttle_delta
 
         brake_delta = target_brake - self._smoothed_brake

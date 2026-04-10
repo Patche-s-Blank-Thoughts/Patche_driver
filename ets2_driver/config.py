@@ -293,6 +293,91 @@ class LlmConfig:
 
 
 # ---------------------------------------------------------------------------
+# Speed tracking (HUD OCR)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SpeedTrackingConfig:
+    """Configuration for HUD OCR-based speed capture and velocity estimation.
+
+    The OCR region should cover the in-game speedometer display (the large
+    km/h number on the HUD).  Defaults are tuned for the ETS2 2560×1080
+    layout with the speedometer in the bottom-right corner.
+
+    Set ``ETS2_SPD_TRACK=true`` to enable (disabled by default to avoid
+    unnecessary CPU cost when pytesseract is not available).
+    """
+
+    # Set to true to enable per-frame speed OCR
+    enabled: bool = os.getenv("ETS2_SPD_TRACK", "false").lower() == "true"
+
+    # Pixel coordinates of the speedometer crop within the captured frame
+    roi_top:    int = int(os.getenv("ETS2_SPD_ROI_TOP",    "900"))
+    roi_bottom: int = int(os.getenv("ETS2_SPD_ROI_BOTTOM", "1000"))
+    roi_left:   int = int(os.getenv("ETS2_SPD_ROI_LEFT",   "2200"))
+    roi_right:  int = int(os.getenv("ETS2_SPD_ROI_RIGHT",  "2560"))
+
+    # Exponential smoothing weight applied to new OCR readings.
+    # Range [0, 1]; higher = more smoothing (slower to respond to changes).
+    smoothing_alpha: float = float(os.getenv("ETS2_SPD_ALPHA", "0.7"))
+
+    # Number of frames to average when computing the velocity trend
+    velocity_window: int = int(os.getenv("ETS2_SPD_VEL_WIN", "5"))
+
+    # Maximum plausible speed (km/h); OCR readings above this are discarded
+    max_speed_kph: float = float(os.getenv("ETS2_SPD_MAX", "200.0"))
+
+    # Run OCR every N frames to limit CPU overhead (1 = every frame)
+    ocr_every_n_frames: int = int(os.getenv("ETS2_SPD_SKIP", "3"))
+
+
+# ---------------------------------------------------------------------------
+# Adaptive PID gain scheduling
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AdaptiveGainConfig:
+    """Speed-dependent PID gain scheduling for the steering controller.
+
+    Three anchor speed points define the gain profile.  Gains are linearly
+    interpolated between them so there are no abrupt step changes.
+
+    Low speed  (0 → speed_mid km/h): higher P-gain for precision; low D.
+    Mid speed  (speed_mid km/h):     balanced defaults (original tuning).
+    High speed (speed_high+ km/h):   lower P-gain; higher D for stability.
+
+    All values can be overridden via the environment variables listed below.
+    """
+
+    # Enable/disable adaptive gain scheduling
+    enabled: bool = os.getenv("ETS2_ADAPT_GAIN", "true").lower() == "true"
+
+    # Speed range anchor points (km/h)
+    speed_mid:  float = float(os.getenv("ETS2_SPEED_MID",  "50.0"))
+    speed_high: float = float(os.getenv("ETS2_SPEED_HIGH", "80.0"))
+
+    # Proportional gain at each anchor
+    kp_low:  float = float(os.getenv("ETS2_PID_P_LOW",  "0.006"))
+    kp_mid:  float = float(os.getenv("ETS2_PID_P_MID",  "0.004"))
+    kp_high: float = float(os.getenv("ETS2_PID_P_HIGH", "0.002"))
+
+    # Integral gain at each anchor
+    ki_low:  float = float(os.getenv("ETS2_PID_I_LOW",  "0.0002"))
+    ki_mid:  float = float(os.getenv("ETS2_PID_I_MID",  "0.0001"))
+    ki_high: float = float(os.getenv("ETS2_PID_I_HIGH", "0.00005"))
+
+    # Derivative gain at each anchor (higher at speed for stability)
+    kd_low:  float = float(os.getenv("ETS2_PID_D_LOW",  "0.001"))
+    kd_mid:  float = float(os.getenv("ETS2_PID_D_MID",  "0.002"))
+    kd_high: float = float(os.getenv("ETS2_PID_D_HIGH", "0.004"))
+
+    # Anti-windup integral clamp at each anchor (tighter at high speed)
+    integral_max_low:  float = float(os.getenv("ETS2_INT_MAX_LOW",  "300.0"))
+    integral_max_mid:  float = float(os.getenv("ETS2_INT_MAX_MID",  "200.0"))
+    integral_max_high: float = float(os.getenv("ETS2_INT_MAX_HIGH", "100.0"))
+
+
+# ---------------------------------------------------------------------------
 # Loop / timing
 # ---------------------------------------------------------------------------
 
@@ -326,3 +411,5 @@ class ETS2Config:
     llm: LlmConfig = field(default_factory=LlmConfig)
     loop: LoopConfig = field(default_factory=LoopConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    speed_tracking: SpeedTrackingConfig = field(default_factory=SpeedTrackingConfig)
+    adaptive_gain: AdaptiveGainConfig = field(default_factory=AdaptiveGainConfig)

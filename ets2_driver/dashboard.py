@@ -123,6 +123,11 @@ class TelemetryState:
     obstacle_sides: List[str] = field(default_factory=list)
     lane_confidence: float = 0.0
     lane_target: str = "center"
+    # Speed tracking telemetry
+    current_speed: float = 0.0
+    target_speed: Optional[float] = None
+    velocity_trend: str = "steady"   # "accelerating" / "decelerating" / "steady"
+    pid_gain_scale: float = 0.5      # 0.0 = low-speed gains, 1.0 = high-speed gains
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +312,13 @@ class DashboardServer:
             "obstacle_sides": state.obstacle_sides,
             "lane_confidence": round(state.lane_confidence, 3),
             "lane_target": state.lane_target,
+            # Speed telemetry
+            "current_speed": round(state.current_speed, 1),
+            "target_speed": (
+                round(state.target_speed, 1) if state.target_speed is not None else None
+            ),
+            "velocity_trend": state.velocity_trend,
+            "pid_gain_scale": round(state.pid_gain_scale, 3),
         }
 
         if state.frame is not None:

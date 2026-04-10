@@ -44,6 +44,7 @@ from .detection import ObstacleDetector
 from .gears import GearShifter
 from .llm_planner import LLMPlanner
 from .speed_limit import SpeedLimitDetector
+from .speed_tracker import SpeedTracker
 from .vision import VisionSystem
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ class ETS2Driver:
         self.gears = GearShifter(self.cfg)
         self.planner = LLMPlanner(self.cfg)
         self.speed_limit_detector = SpeedLimitDetector(self.cfg)
+        self.speed_tracker = SpeedTracker(self.cfg)
         self.dashboard = DashboardServer(self.cfg)
         self.debug_state = DebugState()
 
@@ -204,6 +206,9 @@ class ETS2Driver:
         frame = self.vision.get_frame()
         frame_width = frame.shape[1]
 
+        # 2. Update speed tracker (HUD OCR; returns 0.0 if disabled/unavailable)
+        current_speed = self.speed_tracker.update(frame)
+
         # 2. Compute steering error (lane + GPS blend)
         lane_error = self.vision.get_steering_error(frame)
         gps_img = self.vision.crop_gps(frame)
@@ -246,7 +251,7 @@ class ETS2Driver:
                 lane_error=float(lane_error),
                 obstacle_action=avoidance_action,
                 gps_error=float(gps_error),
-                speed=None,  # extend with OCR speed reading if desired
+                speed=current_speed if current_speed > 0.0 else None,
             )
         dbg.llm_action = llm_action
 
@@ -257,6 +262,7 @@ class ETS2Driver:
             steer_override=steer_override,
             llm_action=llm_action,
             speed_limit=sl_result.limit_kph,
+            current_speed=current_speed,
         )
 
         # Populate control debug info (raw PID values from controller)
@@ -273,6 +279,14 @@ class ETS2Driver:
         dbg.throttle = throttle
         dbg.brake = brake
 
+        # Populate speed tracking and adaptive PID debug info
+        dbg.current_speed = current_speed
+        dbg.target_speed = float(sl_result.limit_kph) if sl_result.limit_kph is not None else None
+        dbg.velocity = self.speed_tracker.velocity
+        dbg.velocity_trend = self.speed_tracker.velocity_trend
+        dbg.pid_gain_scale = self.pid.last_gain_scale
+        dbg.acceleration = self.speed_tracker.velocity
+
         # Commit the frame to history
         self.debug_state.commit()
 
@@ -281,8 +295,8 @@ class ETS2Driver:
         self.vjoy.set_throttle(throttle)
         self.vjoy.set_brake(brake)
 
-        # 8. Gear shifting (speed estimation unavailable without OCR → pass None)
-        self.gears.update(estimated_speed=None)
+        # 8. Gear shifting — pass OCR speed if available
+        self.gears.update(estimated_speed=current_speed if current_speed > 0.0 else None)
 
         # 9. Build reasoning log for the dashboard
         decision_reasons = self._build_decision_reasons(
@@ -296,6 +310,7 @@ class ETS2Driver:
             brake=brake,
             speed_limit=sl_result.limit_kph,
             sl_confidence=sl_result.confidence,
+            current_speed=current_speed,
         )
 
         # 10. Push telemetry to the dashboard
@@ -320,6 +335,10 @@ class ETS2Driver:
                 obstacle_sides=list(self.detector.last_obstacle_sides),
                 lane_confidence=self.vision.last_lane_confidence,
                 lane_target=self.detector.last_lane_target,
+                current_speed=current_speed,
+                target_speed=float(sl_result.limit_kph) if sl_result.limit_kph is not None else None,
+                velocity_trend=self.speed_tracker.velocity_trend,
+                pid_gain_scale=self.pid.last_gain_scale,
             )
         )
 
@@ -368,6 +387,7 @@ class ETS2Driver:
         brake: float,
         speed_limit: Optional[int],
         sl_confidence: float,
+        current_speed: float = 0.0,
     ) -> List[str]:
         """Build a human-readable list of factors driving the current decision.
 
@@ -430,6 +450,16 @@ class ETS2Driver:
             f"D={self.pid.last_d:+.4f}"
         )
 
+        # Speed telemetry and adaptive gain state
+        if current_speed > 0.0:
+            trend_icon = {"accelerating": "⬆", "decelerating": "⬇", "steady": "→"}.get(
+                self.speed_tracker.velocity_trend, "→"
+            )
+            reasons.append(
+                f"🚀 Speed: {current_speed:.0f} km/h {trend_icon}  "
+                f"Gain curve: {self.pid.last_gain_scale:.2f}"
+            )
+
         # Control summary
         reasons.append(
             f"Output → steer={steer:+.3f}  thr={throttle:.0%}  brk={brake:.0%}"
@@ -444,6 +474,7 @@ class ETS2Driver:
         steer_override: float,
         llm_action: str,
         speed_limit: Optional[int] = None,
+        current_speed: float = 0.0,
     ) -> tuple[float, float, float]:
         """Determine final (steer, throttle, brake) triple.
 
@@ -468,6 +499,11 @@ class ETS2Driver:
             Detected speed limit in km/h, or ``None`` if no sign is visible.
             When set, the cruise throttle is scaled down proportionally for
             lower limits so the truck doesn't blast through a 30-zone.
+        current_speed:
+            Current vehicle speed in km/h from
+            :class:`~ets2_driver.speed_tracker.SpeedTracker`.  Passed to the
+            PID and speed controllers for adaptive gain scheduling and
+            speed-aware ramp rates.
 
         Returns
         -------
@@ -482,7 +518,7 @@ class ETS2Driver:
 
         # --- LLM moderate brake (e.g. red light) ---
         if llm_action == "BRAKE":
-            steer = self.pid.compute(combined_error)
+            steer = self.pid.compute(combined_error, speed_kph=current_speed)
             return steer, 0.0, scfg.turn_brake
 
         # --- Obstacle avoidance ---
@@ -490,8 +526,8 @@ class ETS2Driver:
             return steer_override, 0.0, scfg.hard_brake
 
         # --- Normal lane-following ---
-        steer = self.pid.compute(combined_error)
-        throttle, brake = self.speed_ctrl.compute(combined_error)
+        steer = self.pid.compute(combined_error, speed_kph=current_speed)
+        throttle, brake = self.speed_ctrl.compute(combined_error, speed_kph=current_speed)
 
         # --- Speed-limit cap ---
         # Scale the allowed throttle proportionally: at the reference (max)
