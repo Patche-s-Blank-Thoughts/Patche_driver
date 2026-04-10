@@ -28,6 +28,7 @@ Execution flow per frame
 
 from __future__ import annotations
 
+import atexit
 import collections
 import logging
 import signal
@@ -37,12 +38,14 @@ from typing import Deque, List, Optional
 import cv2
 
 from .config import ETS2Config
+from .camera import CameraManager
 from .controller import PIDSteering, SpeedController, VJoyController
 from .dashboard import DashboardServer, TelemetryState
 from .debug_state import DebugState
 from .detection import ObstacleDetector
 from .gears import GearShifter
 from .llm_planner import LLMPlanner
+from .parking_planner import ParkingLotPlanner
 from .speed_limit import SpeedLimitDetector
 from .speed_tracker import SpeedTracker
 from .vision import VisionSystem
@@ -85,6 +88,8 @@ class ETS2Driver:
         self.speed_tracker = SpeedTracker(self.cfg)
         self.dashboard = DashboardServer(self.cfg)
         self.debug_state = DebugState()
+        self.camera = CameraManager(self.cfg)
+        self.parking_planner = ParkingLotPlanner(self.cfg)
 
         # Rolling FPS measurement — keep the last 60 tick timestamps so that
         # the displayed FPS updates every frame rather than every 5 seconds.
@@ -97,6 +102,10 @@ class ETS2Driver:
         # Register SIGINT handler for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
+
+        # Safety-net: ensure vJoy axes are released even if the process exits
+        # via sys.exit() or an uncaught exception rather than a signal.
+        atexit.register(self._atexit_cleanup)
 
         logger.info(
             "ETS2Driver ready — FPS=%d, debug=%s, LLM=%s, dashboard=%s",
@@ -120,10 +129,37 @@ class ETS2Driver:
     # ------------------------------------------------------------------
 
     def stop(self) -> None:
-        """Request the main loop to exit and release all vJoy axes."""
+        """Request the main loop to exit and halt the vehicle via vJoy.
+
+        Sends the brake command several times with a short delay between each
+        attempt so ETS2 has time to process the stop before the Python process
+        exits.  vJoy retains the last written axis values after the process
+        terminates, so we must ensure the final state is *brake full /
+        throttle zero* rather than whatever was active during the last tick.
+        """
         self._running = False
-        self.vjoy.release_all()
+        # Repeat the stop command to ensure ETS2 receives it.  Five attempts
+        # at 50 ms intervals give the game 250 ms to respond — enough for
+        # one or two rendered frames at typical FPS targets.
+        for _ in range(5):
+            self.vjoy.release_all()
+            time.sleep(0.05)
         logger.info("ETS2Driver stopped.")
+
+    def _atexit_cleanup(self) -> None:
+        """Safety-net atexit callback: zero throttle and apply full brake.
+
+        Called automatically by the Python interpreter when the process is
+        about to exit (sys.exit, end of main, unhandled exception).  This
+        supplements the signal handlers to cover cases where neither SIGINT
+        nor SIGTERM fires (e.g. the process is ended by the test runner or an
+        IDE).
+        """
+        try:
+            self.vjoy.set_throttle(0.0)
+            self.vjoy.set_brake(1.0)
+        except Exception:
+            pass  # Best-effort — do not raise during interpreter shutdown
 
     def export_debug(self, path: str = "debug_log.json") -> None:
         """Write the rolling 60-frame debug history to a JSON file.
@@ -255,15 +291,24 @@ class ETS2Driver:
             )
         dbg.llm_action = llm_action
 
-        # 6. Resolve final control outputs (speed limit respected if detected)
-        steer, throttle, brake = self._resolve_controls(
-            combined_error=combined_error,
-            avoidance_action=avoidance_action,
-            steer_override=steer_override,
-            llm_action=llm_action,
-            speed_limit=sl_result.limit_kph,
-            current_speed=current_speed,
+        # 6. Check parking-lot planner (takes priority over normal lane-follow
+        #    when the truck is still in a parking lot at session start).
+        parking_override = self.parking_planner.update(
+            frame, gps_error=float(gps_error), speed_kph=current_speed
         )
+
+        if parking_override is not None:
+            steer, throttle, brake = parking_override
+        else:
+            # Normal resolve path
+            steer, throttle, brake = self._resolve_controls(
+                combined_error=combined_error,
+                avoidance_action=avoidance_action,
+                steer_override=steer_override,
+                llm_action=llm_action,
+                speed_limit=sl_result.limit_kph,
+                current_speed=current_speed,
+            )
 
         # Populate control debug info (raw PID values from controller)
         dbg.raw_steer = self.pid.last_raw
@@ -368,8 +413,18 @@ class ETS2Driver:
                 cv2.putText(debug_frame, "COASTING",
                             (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
             cv2.imshow("ETS2 AI Driver — Debug", debug_frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+
+            # Show GPS mini-map debug window
+            gps_debug = self.vision.draw_gps_debug(gps_img)
+            if gps_debug is not None and gps_debug.size > 0:
+                cv2.imshow("ETS2 AI Driver — GPS Mini-map", gps_debug)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 self.stop()
+            else:
+                # Keys 1–4 switch camera views
+                self.camera.handle_key(key)
 
     # ------------------------------------------------------------------
     # Decision reasoning
