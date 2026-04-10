@@ -39,6 +39,7 @@ import cv2
 from .config import ETS2Config
 from .controller import PIDSteering, SpeedController, VJoyController
 from .dashboard import DashboardServer, TelemetryState
+from .debug_state import DebugState
 from .detection import ObstacleDetector
 from .gears import GearShifter
 from .llm_planner import LLMPlanner
@@ -81,6 +82,7 @@ class ETS2Driver:
         self.planner = LLMPlanner(self.cfg)
         self.speed_limit_detector = SpeedLimitDetector(self.cfg)
         self.dashboard = DashboardServer(self.cfg)
+        self.debug_state = DebugState()
 
         # Rolling FPS measurement — keep the last 60 tick timestamps so that
         # the displayed FPS updates every frame rather than every 5 seconds.
@@ -120,6 +122,22 @@ class ETS2Driver:
         self._running = False
         self.vjoy.release_all()
         logger.info("ETS2Driver stopped.")
+
+    def export_debug(self, path: str = "debug_log.json") -> None:
+        """Write the rolling 60-frame debug history to a JSON file.
+
+        Parameters
+        ----------
+        path:
+            File path to write the JSON log to (default ``"debug_log.json"``).
+        """
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(self.debug_state.export_json())
+            logger.info("Debug log exported to %s (%d frames).",
+                        path, len(self.debug_state.history))
+        except OSError as exc:
+            logger.error("Failed to export debug log: %s", exc)
 
     # ------------------------------------------------------------------
     # Main loop
@@ -179,6 +197,9 @@ class ETS2Driver:
     def _tick(self) -> None:
         """Execute one frame of the driving pipeline."""
 
+        # Start a new debug frame for this tick
+        dbg = self.debug_state.new_frame()
+
         # 1. Capture frame
         frame = self.vision.get_frame()
         frame_width = frame.shape[1]
@@ -189,11 +210,26 @@ class ETS2Driver:
         gps_error = self.vision.gps_direction(gps_img)
         combined_error = self.vision.get_combined_error(frame)
 
+        # Populate lane debug info from vision system
+        dbg.lane_error = float(lane_error)
+        dbg.lane_confidence = self.vision.last_lane_confidence
+        dbg.lane_candidates = list(self.vision.last_lane_candidates)
+        dbg.gps_error = float(gps_error)
+        dbg.gps_blend_weight = self.cfg.gps.blend_weight
+        dbg.combined_error = float(combined_error)
+
         # 3. YOLO obstacle detection
         obstacles = self.detector.detect(frame)
         avoidance_action, steer_override = self.detector.get_avoidance_action(
             obstacles, frame_width
         )
+
+        # Populate obstacle debug info
+        dbg.obstacle_count = len(obstacles)
+        dbg.obstacle_sides = list(self.detector.last_obstacle_sides)
+        dbg.obstacle_distances = list(self.detector.last_obstacle_distances)
+        dbg.avoidance_action = avoidance_action
+        dbg.lane_target = self.detector.last_lane_target
 
         # 4. Speed-limit sign detection (runs every N frames)
         self._sl_frame_counter += 1
@@ -201,6 +237,7 @@ class ETS2Driver:
         if self._sl_frame_counter % sl_skip == 0:
             self.speed_limit_detector.detect(frame)
         sl_result = self.speed_limit_detector.last_result
+        dbg.speed_limit = sl_result.limit_kph
 
         # 5. LLM advisory (runs at ≤ 2 Hz when enabled)
         llm_action = "CONTINUE"
@@ -211,6 +248,7 @@ class ETS2Driver:
                 gps_error=float(gps_error),
                 speed=None,  # extend with OCR speed reading if desired
             )
+        dbg.llm_action = llm_action
 
         # 6. Resolve final control outputs (speed limit respected if detected)
         steer, throttle, brake = self._resolve_controls(
@@ -220,6 +258,23 @@ class ETS2Driver:
             llm_action=llm_action,
             speed_limit=sl_result.limit_kph,
         )
+
+        # Populate control debug info (raw PID values from controller)
+        dbg.raw_steer = self.pid.last_raw
+        dbg.pid_p = self.pid.last_p
+        dbg.pid_i = self.pid.last_i
+        dbg.pid_d = self.pid.last_d
+        dbg.pid_integral = self.pid.integral
+        dbg.raw_throttle = self.speed_ctrl.last_raw_throttle
+        dbg.raw_brake = self.speed_ctrl.last_raw_brake
+        dbg.in_coasting = self.speed_ctrl.in_coasting
+        dbg.in_emergency = self.speed_ctrl.in_emergency
+        dbg.steer = steer
+        dbg.throttle = throttle
+        dbg.brake = brake
+
+        # Commit the frame to history
+        self.debug_state.commit()
 
         # 7. Send axis commands to vJoy
         self.vjoy.set_steering(steer)
@@ -261,6 +316,10 @@ class ETS2Driver:
                 decision_reasons=decision_reasons,
                 obstacles=obstacles,
                 fps=self._current_fps,
+                debug_summary=self.debug_state.summary(),
+                obstacle_sides=list(self.detector.last_obstacle_sides),
+                lane_confidence=self.vision.last_lane_confidence,
+                lane_target=self.detector.last_lane_target,
             )
         )
 
@@ -268,7 +327,12 @@ class ETS2Driver:
         if self.cfg.loop.show_debug:
             lane_center = self.vision.detect_lane_center(frame)
             debug_frame = self.vision.draw_debug(
-                frame, lane_center, combined_error, obstacles
+                frame,
+                lane_center,
+                combined_error,
+                obstacles,
+                lane_candidates=self.vision.last_lane_candidates,
+                obstacle_sides=self.detector.last_obstacle_sides,
             )
             # Annotate speed limit on debug frame
             if sl_result.limit_kph is not None:
@@ -277,6 +341,13 @@ class ETS2Driver:
                     f"Limit: {sl_result.limit_kph} km/h ({sl_result.confidence:.0%})",
                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2,
                 )
+            # Annotate coasting / emergency state
+            if self.speed_ctrl.in_emergency:
+                cv2.putText(debug_frame, "EMERGENCY BRAKE",
+                            (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            elif self.speed_ctrl.in_coasting:
+                cv2.putText(debug_frame, "COASTING",
+                            (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
             cv2.imshow("ETS2 AI Driver — Debug", debug_frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 self.stop()
@@ -321,6 +392,12 @@ class ETS2Driver:
             side = "right" if combined_error > 0 else "left"
             reasons.append(f"⚠ Large drift {side} ({abs_err:.0f}px) — emergency brake!")
 
+        # Coasting / emergency state from speed controller
+        if self.speed_ctrl.in_emergency:
+            reasons.append("🛑 Emergency brake active.")
+        elif self.speed_ctrl.in_coasting:
+            reasons.append("🌊 Coasting — approaching curve.")
+
         # GPS
         if abs(gps_error) > 20:
             side = "right" if gps_error > 0 else "left"
@@ -328,7 +405,11 @@ class ETS2Driver:
 
         # Obstacles
         if avoidance_action != "none":
-            reasons.append(f"🚗 Obstacle detected → {avoidance_action}.")
+            side_info = ""
+            if self.detector.last_obstacle_sides:
+                unique_sides = list(dict.fromkeys(self.detector.last_obstacle_sides))
+                side_info = f" [{', '.join(unique_sides)}]"
+            reasons.append(f"🚗 Obstacle detected{side_info} → {avoidance_action}.")
 
         # Speed limit
         if speed_limit is not None:
@@ -340,6 +421,14 @@ class ETS2Driver:
         # LLM advisory
         if llm_action != "CONTINUE":
             reasons.append(f"🤖 LLM advisory: {llm_action}.")
+
+        # PID debug summary
+        reasons.append(
+            f"PID raw={self.pid.last_raw:+.3f}  "
+            f"P={self.pid.last_p:+.4f}  "
+            f"I={self.pid.last_i:+.4f}  "
+            f"D={self.pid.last_d:+.4f}"
+        )
 
         # Control summary
         reasons.append(

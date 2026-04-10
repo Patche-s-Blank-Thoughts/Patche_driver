@@ -343,6 +343,104 @@
     .llm-pill.EXIT_RIGHT,
     .llm-pill.EXIT_LEFT { border-color: var(--orange); color: var(--orange); }
 
+    /* ── Status flags (coasting / emergency) ───────────────────────── */
+    .status-flags {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .flag-pill {
+      padding: 2px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .5px;
+      opacity: 0.3;
+      transition: opacity .2s, background .2s;
+    }
+    .flag-pill.active { opacity: 1; }
+    .flag-pill.coast   { background: rgba(56,189,248,.15); color: var(--accent);  border: 1px solid var(--accent); }
+    .flag-pill.emrg    { background: rgba(248,113,113,.15); color: var(--red);   border: 1px solid var(--red); }
+    .flag-pill.lane-ok { background: rgba(74,222,128,.15); color: var(--green);  border: 1px solid var(--green); }
+
+    /* ── PID bar mini-chart ─────────────────────────────────────────── */
+    .pid-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+    .pid-label { color: var(--muted); width: 14px; flex-shrink: 0; }
+    .pid-bar-wrap {
+      flex: 1;
+      height: 8px;
+      background: var(--bg);
+      border-radius: 4px;
+      position: relative;
+      overflow: hidden;
+    }
+    .pid-bar-center {
+      position: absolute;
+      left: 50%; top: 0;
+      width: 1px; height: 100%;
+      background: var(--border);
+    }
+    .pid-bar-fill {
+      position: absolute;
+      top: 0; height: 100%;
+      border-radius: 2px;
+      transition: left .1s, width .1s, background .1s;
+    }
+    .pid-val { width: 54px; text-align: right; font-weight: 600; }
+
+    /* ── Obstacle side labels ──────────────────────────────────────── */
+    .obs-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 11px;
+    }
+    .obs-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 6px;
+      border-radius: 4px;
+      background: var(--bg);
+    }
+    .obs-side {
+      font-weight: 700;
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .obs-side.left   { background: rgba(56,189,248,.2);  color: var(--accent); }
+    .obs-side.center { background: rgba(248,113,113,.2); color: var(--red); }
+    .obs-side.right  { background: rgba(251,146,60,.2);  color: var(--orange); }
+
+    /* ── Lane confidence bar ───────────────────────────────────────── */
+    .lane-conf-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+    }
+    .lane-conf-bar-wrap {
+      flex: 1;
+      height: 6px;
+      background: var(--bg);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .lane-conf-bar {
+      height: 100%;
+      border-radius: 3px;
+      background: var(--green);
+      transition: width .3s, background .3s;
+    }
+
     /* ── Footer ────────────────────────────────────────────────────── */
     .footer {
       grid-area: footer;
@@ -369,6 +467,12 @@
     <div class="header-status">
       <span class="metric-pill" id="fps-pill">FPS: —</span>
       <span class="metric-pill" id="obstacle-pill">Obstacles: 0</span>
+      <span class="metric-pill" id="lane-conf-pill" style="color:var(--green);">Lane: —</span>
+      <button id="export-btn" style="
+          background:var(--card);border:1px solid var(--border);border-radius:8px;
+          color:var(--text);padding:3px 10px;font-size:12px;cursor:pointer;">
+        💾 Export Log
+      </button>
       <div style="display:flex;align-items:center;gap:6px;">
         <div class="status-dot" id="conn-dot"></div>
         <span id="conn-label">Connecting…</span>
@@ -477,8 +581,75 @@
       <div id="llm-pill-wrap" style="margin-bottom:8px;">
         <span class="llm-pill CONTINUE" id="llm-pill">🤖 CONTINUE</span>
       </div>
-      <div style="font-size:11px;color:var(--muted);">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">
         Avoidance: <strong id="avoid-label">none</strong>
+        &nbsp;→ Lane: <strong id="lane-target-label">center</strong>
+      </div>
+      <!-- Status flags -->
+      <div class="status-flags">
+        <span class="flag-pill coast" id="flag-coast">🌊 COASTING</span>
+        <span class="flag-pill emrg"  id="flag-emrg">🛑 EMERGENCY</span>
+        <span class="flag-pill lane-ok active" id="flag-lane">✅ LANE OK</span>
+      </div>
+    </div>
+
+    <!-- Obstacle side info -->
+    <div class="sidebar-section" id="obs-section">
+      <div class="section-title">Obstacles</div>
+      <div class="obs-list" id="obs-list">
+        <span style="font-size:11px;color:var(--muted);">No obstacles</span>
+      </div>
+    </div>
+
+    <!-- Lane confidence -->
+    <div class="sidebar-section">
+      <div class="section-title">Lane Detection</div>
+      <div class="lane-conf-wrap" style="margin-bottom:6px;">
+        <span style="color:var(--muted);font-size:11px;">Confidence</span>
+        <div class="lane-conf-bar-wrap">
+          <div class="lane-conf-bar" id="lane-conf-bar" style="width:0%"></div>
+        </div>
+        <span id="lane-conf-val" style="font-size:11px;font-weight:600;">0%</span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);">
+        Candidates: <span id="lane-cands">—</span>
+      </div>
+    </div>
+
+    <!-- PID debug panel -->
+    <div class="sidebar-section">
+      <div class="section-title">PID Debug</div>
+      <!-- P term -->
+      <div class="pid-row">
+        <span class="pid-label">P</span>
+        <div class="pid-bar-wrap">
+          <div class="pid-bar-center"></div>
+          <div class="pid-bar-fill" id="pid-p-fill" style="background:var(--accent);"></div>
+        </div>
+        <span class="pid-val" id="pid-p-val">0.0000</span>
+      </div>
+      <!-- I term -->
+      <div class="pid-row">
+        <span class="pid-label">I</span>
+        <div class="pid-bar-wrap">
+          <div class="pid-bar-center"></div>
+          <div class="pid-bar-fill" id="pid-i-fill" style="background:var(--yellow);"></div>
+        </div>
+        <span class="pid-val" id="pid-i-val">0.0000</span>
+      </div>
+      <!-- D term -->
+      <div class="pid-row">
+        <span class="pid-label">D</span>
+        <div class="pid-bar-wrap">
+          <div class="pid-bar-center"></div>
+          <div class="pid-bar-fill" id="pid-d-fill" style="background:var(--green);"></div>
+        </div>
+        <span class="pid-val" id="pid-d-val">0.0000</span>
+      </div>
+      <!-- Raw steer vs output steer -->
+      <div style="font-size:11px;color:var(--muted);margin-top:6px;">
+        Raw: <strong id="pid-raw-val">0.0000</strong>
+        &nbsp;&nbsp;∫: <strong id="pid-int-val">0.0</strong>
       </div>
     </div>
 
@@ -503,6 +674,9 @@
         <tr><td>Steering</td>    <td id="t-steer">—</td></tr>
         <tr><td>Throttle</td>    <td id="t-thr">—</td></tr>
         <tr><td>Brake</td>       <td id="t-brk">—</td></tr>
+        <tr><td>Raw steer</td>   <td id="t-rawsteer">—</td></tr>
+        <tr><td>Raw throttle</td><td id="t-rawthr">—</td></tr>
+        <tr><td>Raw brake</td>   <td id="t-rawbrk">—</td></tr>
       </table>
     </div>
 
@@ -549,19 +723,16 @@
 
   // Half-circle arc: arc-length ≈ π×40 ≈ 125.66
   function setHalfArc(arcId, value) {
-    // value in [-1, 1]; map to [0, 1] for the half arc
     const circ = 125.66;
     const norm = (Math.max(-1, Math.min(1, value)) + 1) / 2;
     const offset = circ - norm * circ;
     el(arcId).style.strokeDashoffset = offset.toFixed(2);
-    // colour: left=blue, centre=white, right=orange
-    const hue = norm * 60 + 180;   // 180° (blue) → 240° (orange-ish)
     el(arcId).style.stroke = norm < 0.45 ? "var(--accent)" :
                               norm > 0.55 ? "var(--orange)" : "var(--text)";
   }
 
   function setSteerBar(value) {
-    const norm = (Math.max(-1, Math.min(1, value)) + 1) / 2;  // 0..1
+    const norm = (Math.max(-1, Math.min(1, value)) + 1) / 2;
     const fill = el("steer-fill");
     if (norm >= 0.5) {
       fill.style.left  = "50%";
@@ -574,17 +745,31 @@
     }
   }
 
+  /* ── PID bar helper ───────────────────────────────────────────────────── */
+  function setPidBar(fillId, valId, value, maxAbs) {
+    maxAbs = maxAbs || 0.1;
+    const norm = Math.max(-1, Math.min(1, value / maxAbs));
+    const fillEl = el(fillId);
+    if (norm >= 0) {
+      fillEl.style.left  = "50%";
+      fillEl.style.width = (norm * 50) + "%";
+    } else {
+      fillEl.style.left  = (50 + norm * 50) + "%";
+      fillEl.style.width = (-norm * 50) + "%";
+    }
+    el(valId).textContent = value.toFixed(4);
+    el(valId).style.color = Math.abs(norm) > 0.7 ? "var(--red)" : "var(--text)";
+  }
+
   /* ── Decision log ─────────────────────────────────────────────────────── */
   const MAX_LOG = 30;
   const logEl = el("decision-log");
 
   function addLogEntries(reasons, action, avoidance) {
-    // Clear stale entries beyond limit
     while (logEl.children.length > MAX_LOG) logEl.removeChild(logEl.lastChild);
 
     const entries = [...reasons];
 
-    // Synthesise from action if no explicit reasons
     if (entries.length === 0) {
       const actionIcons = {
         CONTINUE: ["ok",    "▶",  "Lane-following — continuing."],
@@ -602,7 +787,6 @@
       entries.unshift({ cls: "danger", icon: "🚨", msg: `Obstacle: ${avoidance}` });
     }
 
-    // Prepend new entries
     entries.reverse().forEach(({ cls, icon, msg } = {}) => {
       const div = document.createElement("div");
       div.className = `log-entry ${cls || "ok"}`;
@@ -610,7 +794,6 @@
       logEl.insertBefore(div, logEl.firstChild);
     });
 
-    // Trim overflow
     while (logEl.children.length > MAX_LOG) logEl.removeChild(logEl.lastChild);
   }
 
@@ -621,11 +804,10 @@
     if (!b64) return;
 
     if (!visionImg) {
-      wrap.innerHTML = "";   // remove placeholder
+      wrap.innerHTML = "";
       visionImg = document.createElement("img");
       visionImg.alt = "AI Vision";
       wrap.appendChild(visionImg);
-      // Re-add overlay
       const ov = document.createElement("div");
       ov.className = "vision-overlay";
       ov.id = "vision-overlay";
@@ -687,6 +869,56 @@
     pill.textContent = `${actionEmoji[action] || "🤖"} ${action}`;
   }
 
+  /* ── Obstacle side list ───────────────────────────────────────────────── */
+  function updateObstacles(sides) {
+    const listEl = el("obs-list");
+    if (!sides || sides.length === 0) {
+      listEl.innerHTML = '<span style="font-size:11px;color:var(--muted);">No obstacles</span>';
+      return;
+    }
+    listEl.innerHTML = sides.map((side, i) =>
+      `<div class="obs-item">
+        <span class="obs-side ${side}">${side.toUpperCase()}</span>
+        <span style="color:var(--muted);">Obstacle #${i + 1}</span>
+       </div>`
+    ).join("");
+  }
+
+  /* ── Lane confidence ──────────────────────────────────────────────────── */
+  function updateLaneConf(conf, candidates) {
+    const pctVal = Math.round((conf || 0) * 100);
+    const bar = el("lane-conf-bar");
+    bar.style.width = pctVal + "%";
+    bar.style.background = pctVal > 60 ? "var(--green)" :
+                           pctVal > 30 ? "var(--yellow)" : "var(--red)";
+    el("lane-conf-val").textContent = pctVal + "%";
+    el("lane-conf-pill").textContent = `Lane: ${pctVal}%`;
+    el("lane-conf-pill").style.color = pctVal > 60 ? "var(--green)" :
+                                       pctVal > 30 ? "var(--yellow)" : "var(--red)";
+    el("lane-cands").textContent = candidates && candidates.length
+      ? candidates.join(", ") + " px"
+      : "—";
+  }
+
+  /* ── Status flags ─────────────────────────────────────────────────────── */
+  function updateFlags(inCoasting, inEmergency) {
+    el("flag-coast").classList.toggle("active", !!inCoasting);
+    el("flag-emrg").classList.toggle("active",  !!inEmergency);
+    el("flag-lane").classList.toggle("active",  !inEmergency);
+  }
+
+  /* ── Debug log export ─────────────────────────────────────────────────── */
+  let _lastDebugHistory = null;
+  el("export-btn").addEventListener("click", () => {
+    if (!_lastDebugHistory) { alert("No debug data yet."); return; }
+    const blob = new Blob([JSON.stringify(_lastDebugHistory, null, 2)],
+                          { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `ets2_debug_${Date.now()}.json`;
+    a.click();
+  });
+
   /* ── Main telemetry handler ───────────────────────────────────────────── */
   socket.on("telemetry", function (d) {
     // Header metrics
@@ -717,6 +949,7 @@
     // LLM advisory
     updateLlmPill(d.llm_action || "CONTINUE");
     el("avoid-label").textContent = d.avoidance_action || "none";
+    el("lane-target-label").textContent = d.lane_target || "center";
 
     // Decision log
     const reasons = (d.decision_reasons || []).map(r => {
@@ -732,6 +965,42 @@
     el("t-steer").textContent = d.steering != null ? d.steering.toFixed(4) : "—";
     el("t-thr").textContent   = d.throttle != null ? pct(d.throttle) : "—";
     el("t-brk").textContent   = d.brake    != null ? pct(d.brake)    : "—";
+
+    // Enhanced debug fields
+    const dbg = d.debug_summary || {};
+    el("t-rawsteer").textContent = dbg.raw_steer != null ? dbg.raw_steer.toFixed(4) : "—";
+    el("t-rawthr").textContent   = dbg.raw_throttle != null ? pct(dbg.raw_throttle) : "—";
+    el("t-rawbrk").textContent   = dbg.raw_brake    != null ? pct(dbg.raw_brake)    : "—";
+
+    // PID bars
+    if (dbg.pid_p != null) {
+      setPidBar("pid-p-fill", "pid-p-val", dbg.pid_p,   0.05);
+      setPidBar("pid-i-fill", "pid-i-val", dbg.pid_i,   0.02);
+      setPidBar("pid-d-fill", "pid-d-val", dbg.pid_d,   0.05);
+      el("pid-raw-val").textContent = dbg.raw_steer != null ? dbg.raw_steer.toFixed(4) : "—";
+      el("pid-int-val").textContent = dbg.pid_integral != null ? dbg.pid_integral.toFixed(1) : "—";
+    }
+
+    // Obstacle sides
+    updateObstacles(d.obstacle_sides);
+
+    // Lane confidence
+    updateLaneConf(d.lane_confidence, dbg.lane_candidates);
+
+    // Status flags
+    updateFlags(dbg.in_coasting, dbg.in_emergency);
+
+    // Store debug history for export (accumulate last 60 frames client-side)
+    if (dbg.frame_id) {
+      if (!_lastDebugHistory) _lastDebugHistory = [];
+      _lastDebugHistory.push(Object.assign({}, dbg, {
+        timestamp: d.timestamp,
+        steering: d.steering, throttle: d.throttle, brake: d.brake,
+        lane_error: d.lane_error, gps_error: d.gps_error,
+        avoidance_action: d.avoidance_action,
+      }));
+      if (_lastDebugHistory.length > 60) _lastDebugHistory.shift();
+    }
   });
 
 })();
